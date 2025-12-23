@@ -1,7 +1,13 @@
 # All DB related stuff
+import os
+from contextlib import contextmanager # what is this for?
+from typing import Optional, Dict, Any, List # what is this for?
+
 from sqlalchemy import (
     Column, Integer, String, DateTime, ForeignKey, UniqueConstraint, func,)
-from sqlalchemy.orm import declarative_base, relationship
+from sqlalchemy import create_engine, select
+from sqlalchemy.orm import sessionmaker, Session, joinedload, declarative_base, relationship
+
 
 Base = declarative_base()
 
@@ -45,21 +51,38 @@ class BookImages(Base):
 
 
 
+# change below to Postgres (Cloud SQL) later
+DATABASE_URL = os.environ.get("DATABASE_URL", "sqlite:///./local_store/bookworm.db")
 
-# 12/23 TOMORROW TO UPDATE:
-# 1. Setup connection to database (and figure out closing)
-# 2. Then fix functions so apply SQL correctly, error check
+#DB engine is connection factory SQLAlchemy uses under the hood
+# VERIFY PURPOSE OF THIS BELOW
+connect_args = {"check_same_thread" : False} if DATABASE_URL.startswith("sqlite") else {}
+engine = create_engine(DATABASE_URL, connect_args=connect_args)
+
+#Session is unit of work for queries, inserts, and commits
+# VERIFY PURPOSE OF THIS BELOW
+SessionLocal = sessionmaker(bind=engine, autocommit=False, autoflush=False)
+
 
 #Create a Database connection/engine
-# init_db to set up (create tables)
+# init_db to set up (create tables) if don't exist
 def init_db():
-    pass
-
-# can either do raw SQL here or SQLAlchemy metadata.create_all
-
+    #run once at startup or manually for MVP
+    Base.metadata.create_all(bind=engine) # what does this do?
 
 
-# TBD: remember to set all future columns as NULL, or do implicitly
+@contextmanager
+def get_session() -> Session:
+    # Minimal session manager which closes DB connection after
+    session = SessionLocal()
+    try:
+	yield session
+	session.commit()
+    except Exception:
+        session.rollback()
+        raise
+    finally:
+        session.close()
 
 
 # Helper functions: Do we just use SQL to implement these?
