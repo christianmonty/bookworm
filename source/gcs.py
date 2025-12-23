@@ -2,6 +2,11 @@
 # takes images from local storage, puts into GCS
 # returns address of where uploaded image is in GCS
 
+#12/23 TOMORROW: figure out what local path to save (or Google photos lol w/naming...
+# GET connected to GCS, figure out how to send an image there, named correctly?
+
+# think of automated way to name every other at some point...
+
 def upload_image(book_id, image_type, file_bytes) -> gcs_path:
     if file_bytes in None:
         raise ValueError("file_bytes cannot be None")

@@ -1,5 +1,9 @@
 # All DB related stuff
 
+# 12/23 TOMORROW TO UPDATE:
+# 1. Setup connection to database (and figure out closing)
+# 2. Then fix functions so apply SQL correctly, error check
+
 #Create a Database connection/engine
 # init_db to set up (create tables)
 def init_db():
@@ -29,12 +33,24 @@ def create_book(book_id: int) -> int:
     """
     pass
 
-def save_image_record(book_id: int, image_type:str, gcs_path: str) -> int:
+def save_image_record(book_id: int, image_type: str, gcs_path: str) -> int:
     # save image record into book_images table
+
+	#include some sort of error check if book_id & image_type present!
+    sql_query = """
+    INSERT INTO book_images
+    VALUES (book_id, image_type, gcs_path, CURRENT_TIMESTAMP)
+    """
     pass
 
 def save_extraction(book_id: int, metadata: dict) -> int:
     # save extracted metadata into books table
+
+    sql_query = """
+    UPDATE books
+    # Need to add for-loop here for metadata into database, match up fields #
+    # manually I guess
+    """
     pass
 
 def mark_status(book_id: int, status: str) -> int:
@@ -46,3 +62,20 @@ def mark_status(book_id: int, status: str) -> int:
     # Double check this all makes sense, including CURRENT_TIMESTAMP
     # created, images_uploaded, extracted, on_eBay, SOLD, shipped, error
     pass
+
+def load_paths(book_id: int, image_type: str) -> str:
+    sql_query = """
+    SELECT gcs_path
+    FROM book_images
+    WHERE book_id = book_id AND image_type = image_type;
+    """
+    pass
+
+def read_entry(book_id: int) -> dict:
+    sql_entry = """
+    SELECT *
+    FROM books
+    WHERE book_id = book_id;
+    """
+
+    return {}
