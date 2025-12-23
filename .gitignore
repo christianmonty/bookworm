@@ -1,6 +1,10 @@
 # secrets
 .env
 
+# git
+.gitattributes
+.gitignore
+
 # python
 __pycache__/
 *.pyc
