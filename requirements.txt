@@ -1,0 +1,10 @@
+# Below includes the services used by this project
+
+Web server framework: FastAPI
+
+DB: SQLAlchemy
+
+GCS: google-cloud-storage
+
+OpenAI client
+
