@@ -5,7 +5,7 @@ from source import extraction
 def process_book(book_id: int) -> int:
 	#will do all the steps and then call extract.py
 
-	# create initial entry in DB for book_id
+	# load image paths from DB book_images table
 
 	# pull 2 images for book_id from GCS
 	image1 = None # query to GCS per bookid for cover image

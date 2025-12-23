@@ -8,3 +8,5 @@ Goals:
 5. Will use Ebay API to pull info for each book
 6. Will use Ebay API to list each book for sale (each row in DB)
 7. Upon sales, will use Ebay API to track sales and update collection
+
+Note: Maybe set up Alembic to track schema changes/migrations later...
