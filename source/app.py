@@ -12,12 +12,15 @@ async def get_entry(book_id: int): # path operation function, async means not bl
 
 	return db.read_entry(book_id)
 
+
+# WHERE DO WE INCREMENT THE BOOK_ID IN THE CALL??
+
 # POST /books to create a book row, returns book_id
 # path operation function, to create initial book entry
 @app.post("/books")
 async def create_book(book_id: int):
-	ret = db.create_book(book_id)
-	pass
+
+	return db.create_book(book_id)
 
 # POST /books/{book_id}/images/{image_type}
 # accepts an upload, calls gcs.upload_image, writes to db for images
