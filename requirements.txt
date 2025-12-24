@@ -8,3 +8,5 @@ GCS: google-cloud-storage
 
 OpenAI client
 
+python-dotenv
+
