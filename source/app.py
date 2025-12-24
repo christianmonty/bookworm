@@ -6,7 +6,7 @@ load_dotenv(Path(__file__).resolve().parents[1] / ".env")
 
 import os
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, UploadFile, File, HTTPException, Request, Form
+from fastapi import FastAPI, UploadFile, File, HTTPException, Request, Form, Response
 from fastapi.responses import HTMLResponse, RedirectResponse
 from starlette.middleware.sessions import SessionMiddleware
 
@@ -77,56 +77,126 @@ async def upload_book_image(book_id: int, image_type: str, file: UploadFile = Fi
 
 
 # Rendering the capture page in HTML
+STYLE = """
+<style>
+  body { max-width: 520px; margin: 20px; font-family: system-ui; }
+  h1 { margin: 0 0 12px 0; }
+  h2 { margin: 0 0 14px 0; }
+  .card { padding: 18px; border: 1px solid #ddd; border-radius: 18px; margin: 18px 0; }
+  .big { font-size: 30px; padding: 18px; width: 100%; border-radius: 18px; }
+  .med { font-size: 24px; padding: 16px; width: 100%; border-radius: 16px; }
+  .label { font-size: 22px; display: block; margin-bottom: 10px; }
+  .muted { color: #555; font-size: 18px; }
+  .spacer { height: 26px; }
+  .danger { margin-top: 34px; }
+  select, input[type="number"] { font-size: 26px; padding: 16px; width: 100%; border-radius: 16px; }
+  /* Big “Choose photo” button pattern */
+  .file-input { position: absolute; left: -9999px; }
+  .file-button { display: block; text-align: center; border: 2px solid #999; }
+</style>
+"""
 
 def _render_capture_page(bin_value, current_book_id, progress=None, message: str | None = None) -> str:
-    # minimal inline HTML (no templates needed)
-    # keep it simple and big-button friendly
     cond_options = ["new", "like_new", "very_good", "good", "acceptable"]
 
-    def cond_select():
+    def cond_select() -> str:
         opts = "\n".join([f'<option value="{c}">{c}</option>' for c in cond_options])
         return f"""
-        <label style="font-size:18px;">Condition (locks once set)</label><br/>
-        <select name="condition" required style="font-size:20px; padding:10px; width:100%;">
-          <option value="" selected disabled>Select…</option>
-          {opts}
-        </select><br/><br/>
+        <div class="card">
+          <label class="label">Condition (locks once set)</label>
+          <select name="condition" required>
+            <option value="" selected disabled>Select…</option>
+            {opts}
+          </select>
+          <div class="spacer"></div>
+          <div class="muted">Pick once. After it’s set, you won’t be asked again.</div>
+        </div>
         """
 
-    msg_html = f"<p style='color:#b00; font-size:18px;'><b>{message}</b></p>" if message else ""
+    def upload_form(image_type: str, condition_needed: bool) -> str:
+        title = "Step 1: Upload cover" if image_type == "cover" else "Step 2: Upload copyright"
+        button_text = "Upload cover" if image_type == "cover" else "Upload copyright"
 
-    # State 1: no bin
+        # NOTE: label triggers the hidden file input; gives you a large safe tap target.
+        return f"""
+        <div class="card">
+          <h2>{title}</h2>
+          <form method="post" action="/capture/upload/{image_type}" enctype="multipart/form-data">
+            {cond_select() if condition_needed else ""}
+
+            <label class="label">Photo</label>
+            <label for="file_{image_type}" class="med file-button">
+              Choose photo (opens camera)
+            </label>
+            <input id="file_{image_type}" class="file-input"
+                   type="file" name="file"
+                   accept="image/*" capture="environment" required />
+
+            <div class="spacer"></div>
+            <div class="muted">After choosing the photo, press upload below.</div>
+
+            <div class="spacer"></div>
+            <button type="submit" class="big">{button_text}</button>
+          </form>
+        </div>
+        """
+
+    msg_html = f"<div class='card' style='border-color:#f1b0b7;'><b style='font-size:20px;'>{message}</b></div>" if message else ""
+
+    # -------- State 1: no bin selected --------
     if bin_value is None:
         return f"""
-        <html><body style="max-width:520px; margin:20px; font-family:system-ui;">
-          <h1>Bookworm Capture</h1>
-          {msg_html}
-          <form method="post" action="/capture/bin">
-            <label style="font-size:18px;">Select bin (numeric)</label><br/>
-            <input name="bin" type="number" min="1" required style="font-size:24px; padding:12px; width:100%;"/><br/><br/>
-            <button type="submit" style="font-size:26px; padding:16px; width:100%;">Set bin</button>
-          </form>
-        </body></html>
+        <html>
+          <head>
+            <meta name="viewport" content="width=device-width, initial-scale=1"/>
+            {STYLE}
+          </head>
+          <body>
+            <h1>Bookworm Capture</h1>
+            {msg_html}
+
+            <div class="card">
+              <form method="post" action="/capture/bin">
+                <label class="label">Select bin (numeric)</label>
+                <input name="bin" type="number" min="1" required />
+                <div class="spacer"></div>
+                <button type="submit" class="big">Set bin</button>
+              </form>
+            </div>
+          </body>
+        </html>
         """
 
-    # State 2: have bin, no current book
+    # -------- State 2: bin selected, no current book --------
     if current_book_id is None:
         return f"""
-        <html><body style="max-width:520px; margin:20px; font-family:system-ui;">
-          <h1>Bookworm Capture</h1>
-          {msg_html}
-          <p style="font-size:18px;">Bin: <b>{bin_value}</b></p>
-          <form method="post" action="/capture/next">
-            <button type="submit" style="font-size:28px; padding:18px; width:100%;">Start next book</button>
-          </form>
-          <hr/>
-          <form method="post" action="/capture/clear_bin">
-            <button type="submit" style="font-size:18px; padding:12px; width:100%;">Change bin</button>
-          </form>
-        </body></html>
+        <html>
+          <head>
+            <meta name="viewport" content="width=device-width, initial-scale=1"/>
+            {STYLE}
+          </head>
+          <body>
+            <h1>Bookworm Capture</h1>
+            {msg_html}
+
+            <div class="card">
+              <div style="font-size:22px;">Bin: <b>{bin_value}</b></div>
+              <div class="spacer"></div>
+              <form method="post" action="/capture/next">
+                <button type="submit" class="big">Start next book</button>
+              </form>
+            </div>
+
+            <div class="card">
+              <form method="post" action="/capture/clear_bin">
+                <button type="submit" class="med">Change bin</button>
+              </form>
+            </div>
+          </body>
+        </html>
         """
 
-    # State 3: in-progress book
+    # -------- State 3: current book in progress --------
     has_cover = progress["has_cover"]
     has_copyright = progress["has_copyright"]
     condition = progress["condition"]
@@ -135,58 +205,57 @@ def _render_capture_page(bin_value, current_book_id, progress=None, message: str
     copy_line = "✅ copyright uploaded" if has_copyright else "❌ copyright missing"
     cond_line = condition if condition else "not set"
 
-    # Decide which upload form to show (enforce order: cover then copyright)
-    upload_html = ""
+    # Enforce order: cover first, then copyright, then finish
+    condition_needed = (condition is None)
     if not has_cover:
-        upload_html = f"""
-        <h2>Step 1: Upload cover</h2>
-        <form method="post" action="/capture/upload/cover" enctype="multipart/form-data">
-          {cond_select() if condition is None else ""}
-          <input type="file" name="file" accept="image/*" capture="environment"
-                 required style="font-size:18px; width:100%;"/><br/><br/>
-          <button type="submit" style="font-size:26px; padding:16px; width:100%;">Upload cover</button>
-        </form>
-        """
+        main_action_html = upload_form("cover", condition_needed)
     elif not has_copyright:
-        upload_html = f"""
-        <h2>Step 2: Upload copyright</h2>
-        <form method="post" action="/capture/upload/copyright" enctype="multipart/form-data">
-          {cond_select() if condition is None else ""}
-          <input type="file" name="file" accept="image/*" capture="environment"
-                 required style="font-size:18px; width:100%;"/><br/><br/>
-          <button type="submit" style="font-size:26px; padding:16px; width:100%;">Upload copyright</button>
-        </form>
-        """
+        main_action_html = upload_form("copyright", condition_needed)
     else:
-        upload_html = f"""
-        <h2>All set</h2>
-        <form method="post" action="/capture/finish">
-          <button type="submit" style="font-size:28px; padding:18px; width:100%;">Finish book</button>
-        </form>
+        main_action_html = f"""
+        <div class="card">
+          <h2>All set</h2>
+          <div class="muted">Both photos are uploaded. You can finish this book.</div>
+          <div class="spacer"></div>
+          <form method="post" action="/capture/finish">
+            <button type="submit" class="big">Finish book</button>
+          </form>
+        </div>
         """
 
     return f"""
-    <html><body style="max-width:520px; margin:20px; font-family:system-ui;">
-      <h1>Bookworm Capture</h1>
-      {msg_html}
-      <p style="font-size:18px;">Bin: <b>{bin_value}</b></p>
-      <p style="font-size:18px;">Current book: <b>{current_book_id}</b></p>
+    <html>
+      <head>
+        <meta name="viewport" content="width=device-width, initial-scale=1"/>
+        {STYLE}
+      </head>
+      <body>
+        <h1>Bookworm Capture</h1>
+        {msg_html}
 
-      <div style="padding:12px; border:1px solid #ddd; border-radius:12px;">
-        <p style="font-size:18px; margin:6px 0;">{cover_line}</p>
-        <p style="font-size:18px; margin:6px 0;">{copy_line}</p>
-        <p style="font-size:18px; margin:6px 0;">Condition: <b>{cond_line}</b></p>
-      </div>
+        <div class="card">
+          <div style="font-size:22px;">Bin: <b>{bin_value}</b></div>
+          <div style="font-size:22px; margin-top:10px;">Current book: <b>{current_book_id}</b></div>
+          <div class="spacer"></div>
 
-      <hr/>
-      {upload_html}
+          <div style="font-size:22px; margin:8px 0;">{cover_line}</div>
+          <div style="font-size:22px; margin:8px 0;">{copy_line}</div>
+          <div style="font-size:22px; margin:8px 0;">Condition: <b>{cond_line}</b></div>
+        </div>
 
-      <hr/>
-      <form method="post" action="/capture/abandon">
-        <button type="submit" style="font-size:18px; padding:12px; width:100%;">Abandon current book</button>
-      </form>
-    </body></html>
+        {main_action_html}
+
+        <div class="danger card">
+          <form method="post" action="/capture/abandon">
+            <button type="submit" class="med" style="border:2px solid #b00;">Abandon current book</button>
+          </form>
+          <div class="spacer"></div>
+          <div class="muted">Use this only if you started a book by accident.</div>
+        </div>
+      </body>
+    </html>
     """
+
 
 
 #-----Capture Routes Detailed Below---------
@@ -309,3 +378,16 @@ async def capture_abandon(request: Request):
         db.mark_status(book_id, "abandoned")
     request.session.pop("current_book_id", None)
     return RedirectResponse(url="/capture", status_code=303)
+
+# Below are to get rid of the annoying Safari icon 404 spam (cosmetic)
+@app.get("/favicon.ico")
+async def favicon():
+    return Response(status_code=204)
+
+@app.get("/apple-touch-icon.png")
+async def apple_touch_icon():
+    return Response(status_code=204)
+
+@app.get("/apple-touch-icon-precomposed.png")
+async def apple_touch_icon_precomposed():
+    return Response(status_code=204)
