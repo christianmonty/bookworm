@@ -49,10 +49,10 @@ async def upload_book_image(book_id: int, image_type: str, file: UploadFile = Fi
 		raise HTTPException(status_code=400, detail="Uploaded file was empty")
 
 	# Upload the photo locally
-	gcs_path = gcs.upload_image(book_id, image_type, file.file.read())
+	gcs_path = gcs.upload_image(book_id, image_type, file_bytes)
 
 	try:
-		db.save_image_record(int, str, gcs_path)
+		db.save_image_record(book_id, image_type, gcs_path)
 	except ValueError as e:
 		raise HTTPException(status_code=404, detail=str(e))
 

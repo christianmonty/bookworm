@@ -13,7 +13,7 @@ LOCAL_STORE = BASE_DIR / "local_store"
 
 #Goal is take bytes from FastAPI upload, write to disk, return "path" string
 def upload_image(book_id: int, image_type: str, file_bytes: bytes) -> str:
-    if file_bytes in None:
+    if file_bytes is None:
         raise ValueError("file_bytes cannot be None")
 
     if image_type not in {"cover", "copyright"}:

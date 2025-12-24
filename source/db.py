@@ -46,8 +46,7 @@ class BookImage(Base):
 
     created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now(),)
 
-    #below permits doing book.images
-    images = relationship("Book", back_populates="images",)
+    book = relationship("Book", back_populates="images",)
 
     #enforcing no duplicates in Images table
     __table_args__ = (UniqueConstraint("book_id", "image_type", name="uq_book_image_type"),)
@@ -101,7 +100,7 @@ def create_book() -> int:
 
     # include some sort of error check if book_id already in table!
     with get_session() as session:
-        book = Book(status="created") #tbd if initializer needed since default
+        book = Book() #tbd if initializer needed since default
         session.add(book)
         session.flush() # pusehs to DB
         return book.id
