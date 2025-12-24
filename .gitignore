@@ -1,6 +1,10 @@
 # secrets
 .env
 
+# git
+.gitattributes
+.gitignore
+
 # python
 __pycache__/
 *.pyc
@@ -19,3 +23,6 @@ env/
 # OS
 .DS_Store
 Thumbs.db
+
+# local runtime data
+local_store/
