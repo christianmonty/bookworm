@@ -17,7 +17,7 @@ def upload_image(book_id: int, image_type: str, file_bytes: bytes) -> str:
         raise ValueError("file_bytes cannot be None")
 
     if image_type not in {"cover", "copyright"}:
-        raise ValueError("image_type must be 'cover' or 'copywright'")
+        raise ValueError("image_type must be 'cover' or 'copyright'")
 
     #Now need to create path from directory and type signifiers
     out_dir = LOCAL_STORE / "raw" / str(book_id)

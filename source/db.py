@@ -17,8 +17,10 @@ class Book(Base):
     __tablename__ = "books"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-
     status = Column(String, nullable=False, default="created")
+
+    bin = Column(Integer, nullable=True)
+    condition = Column(String, nullable=True)
 
     created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now(),)
 
@@ -95,26 +97,38 @@ def get_session() -> Iterator[Session]:
         session.close()
 
 
+CONDITIONS = {"new", "like_new", "very_good", "good", "acceptable"} # tbd update
 
-def create_book() -> int:
+def create_book(bin: int | None = None, status: str = "created") -> int:
 
-    # include some sort of error check if book_id already in table!
     with get_session() as session:
-        book = Book() #tbd if initializer needed since default
+        book = Book(bin=bin, status=status)
         session.add(book)
-        session.flush() # pusehs to DB
+        session.flush() # pushes to DB
         return book.id
 
     # create initial book entry in books table with status 'created'
     # sql_query = """ INSERT INTO books VALUES (book_id, "created", CURRENT_TIMESTAMP, CURRENT_TIMESTAMP); """
 
+def set_condition_once(book_id: int, condition: str) -> None:
+    if condition not in CONDITIONS:
+        raise ValueError(f"Invalid condition: {condition}")
+
+    with get_session() as session:
+        book = session.get(Book, book_id)
+        if book is None:
+            raise ValueError(f"Book {book_id} not found")
+
+        if book.condition is None:
+            book.condition = condition
+            session.flush()
 
 def save_image_record(book_id: int, image_type: str, gcs_path: str) -> int:
     # save image record into book_images table
     # if pair (book_id, image_type) exists, update storage_path
     # otherwise, insert a new record to BookImage db
-    if image_type not in {"cover", "copywright"}:
-        raise ValueError("image_type must be 'cover' or 'copywright'")
+    if image_type not in {"cover", "copyright"}:
+        raise ValueError("image_type must be 'cover' or 'copyright'")
 
     with get_session() as session:
         # Ensure the book exists
@@ -206,6 +220,27 @@ def read_entry(book_id: int) -> Dict[str, Any]:
         }
 
 # sql_entry = """SELECT * FROM books WHERE book_id = book_id; """
+
+def get_book_progress(book_id: int) -> dict:
+    """Returns which images exist and current condition/status/bin."""
+    with get_session() as session:
+        book = (session.execute(
+            select(Book).options(joinedload(Book.images)).where(Book.id == book_id)
+        ).unique().scalar_one_or_none())
+
+        if book is None:
+            raise ValueError(f"Book {book_id} not found")
+
+        types = {img.image_type for img in book.images}
+        return {
+            "id": book.id,
+            "status": book.status,
+            "bin": book.bin,
+            "condition": book.condition,
+            "has_cover": "cover" in types,
+            "has_copyright": "copyright" in types,
+        }
+
 
 def save_extraction(book_id: int, metadata: dict) -> int:
     # save extracted metadata into books table
