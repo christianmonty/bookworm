@@ -1,4 +1,5 @@
 # All DB related stuff
+from pathlib import Path
 import os
 from contextlib import contextmanager # what is this for?
 from typing import Iterator, Dict, Any, List # what is this for?
@@ -52,9 +53,15 @@ class BookImage(Base):
     __table_args__ = (UniqueConstraint("book_id", "image_type", name="uq_book_image_type"),)
 
 
-
 # change below to Postgres (Cloud SQL) later
-DATABASE_URL = os.environ.get("DATABASE_URL", "sqlite:///./local_store/bookworm.db")
+BASE_DIR = Path(__file__).resolve().parents[1]   # repo root if db.py is in /source
+LOCAL_STORE = BASE_DIR / "local_store"
+LOCAL_STORE.mkdir(parents=True, exist_ok=True)
+
+default_sqlite_url = f"sqlite:///{(LOCAL_STORE / 'bookworm.db').as_posix()}"
+
+
+DATABASE_URL = os.environ.get("DATABASE_URL", default_sqlite_url)
 
 #DB engine is connection factory SQLAlchemy uses under the hood
 # VERIFY PURPOSE OF THIS BELOW
@@ -90,14 +97,10 @@ def get_session() -> Iterator[Session]:
 
 
 
-def create_book(book_id: int) -> int:
+def create_book() -> int:
 
     # include some sort of error check if book_id already in table!
     with get_session() as session:
-        check = session.get(Book, book_id)
-        if check is not None:
-            raise ValueError(f"Book {book_id} already found")
-
         book = Book(status="created") #tbd if initializer needed since default
         session.add(book)
         session.flush() # pusehs to DB

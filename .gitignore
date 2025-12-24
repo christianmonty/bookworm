@@ -23,3 +23,6 @@ env/
 # OS
 .DS_Store
 Thumbs.db
+
+# local runtime data
+local_store/

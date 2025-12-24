@@ -24,7 +24,7 @@ app = FastAPI(lifespan=lifespan) # create a FastAPI instance
 # path operation function, to create initial book entry
 @app.post("/books")
 async def create_book():
-	book_id = db.create_book(book_id)
+	book_id = db.create_book()
 	return {"book_id": book_id}
 
 @app.get("/books/{book_id}")
