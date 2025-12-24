@@ -1,6 +1,7 @@
 # This project is to upload books to Ebay easily
 
 Goals:
+0. Will build basic frontend to upload photos easily to API endpoint
 1. Will utilize Google cloud storage to store cover/copywright pages
 2. Will use OpenAI call to ingest photos
 3. Will build basic review UI to confirm the AI ingestion

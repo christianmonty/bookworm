@@ -37,23 +37,31 @@ async def get_entry(book_id: int): # path operation function, async means not bl
 
 
 
-
 # POST /books/{book_id}/images/{image_type}
 # accepts an upload, calls gcs.upload_image, writes to db for images
 @app.post("/books/{book_id}/images/{image_type}")
-async def upload_book_image(book_id: int, image_type: str, file: UploadFile = File(...)):
+async def upload_book_image(book_id: int, image_type: str, file: UploadFile = File(...)): # Fully understand what syntax means
+	if image_type not in {"cover", "copyright"}:
+		raise HTTPException(status_code=400, detail="image_type must be 'cover' or 'copyright'")
+
+	file_bytes = await file.read()
+	if not file_bytes:
+		raise HTTPException(status_code=400, detail="Uploaded file was empty")
+
+	# Upload the photo locally
 	gcs_path = gcs.upload_image(book_id, image_type, file.file.read())
 
-	ret = db.save_image_record(int, str, gcs_path)
-	if not ret:
-		raise ValueError(f"Image for {book_id} not saved correctly")
+	try:
+		db.save_image_record(int, str, gcs_path)
+	except ValueError as e:
+		raise HTTPException(status_code=404, detail=str(e))
 
 	if image_type == "cover":
 		db.mark_status(book_id, "cover_uploaded")
-	elif image_type = "copywright"
+	elif image_type == "copyright":
 		db.mark_status(book_id, "images_uploaded")
 
-	return {"gcs_path": gcs_path}
+	return {"book_id": book_id, "image_type": image_type, "gcs_path": gcs_path}
 
 
 # POST /jobs/extract?limit=10 point is to do the OpenAI calls in batches

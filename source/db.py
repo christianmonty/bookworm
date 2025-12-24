@@ -39,7 +39,7 @@ class BookImage(Base):
 
     book_id = Column(Integer, ForeignKey("books.id", ondelete="CASCADE"), nullable=False)
 
-    image_type = Column(String, nullable=False) #cover or copywright
+    image_type = Column(String, nullable=False) #cover or copyright
 
     storage_path = Column(String, nullable=False) #path for file in storage
 

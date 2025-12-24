@@ -1,5 +1,5 @@
 # OpenAI vision -> fields logic
-# Input is two images (cover + copywright), returns structured JSON
+# Input is two images (cover + copyright), returns structured JSON
 # Provides basic validation (missing ISBN, confidence low, warnings)
 
 # 12/23 can ignore processing for now
