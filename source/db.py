@@ -174,11 +174,14 @@ def load_path(book_id: int, image_type: str) -> str:
 def read_entry(book_id: int) -> Dict[str, Any]:
     #Returns a JSON-friendly dict for book + its images, use for debugging
     with get_session() as session:
-        book = session.execute(
+        book = (session.execute(
             select(Book)
             .options(joinedload(Book.images))
             .where(Book.id == book_id)
-        ).scalar_one_or_none()
+        )
+	.unique()
+	.scalar_one_or_none()
+	)
 
         if book is None:
             raise ValueError(f"Book {book_id} not found")
