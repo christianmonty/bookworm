@@ -113,33 +113,68 @@ def _render_capture_page(bin_value, current_book_id, progress=None, message: str
         </div>
         """
 
-    def upload_form(image_type: str, condition_needed: bool) -> str:
+    def upload_form(image_type: str, condition_needed: bool, jacket_val, notes_val) -> str:
         title = "Step 1: Upload cover" if image_type == "cover" else "Step 2: Upload copyright"
         button_text = "Upload cover" if image_type == "cover" else "Upload copyright"
 
-        # NOTE: label triggers the hidden file input; gives you a large safe tap target.
+        # Checkbox: only editable if not set yet; otherwise display status
+        jacket_block = ""
+        if jacket_val is None:
+            jacket_block = """
+            <div class="card">
+            <label class="label">
+                <input type="checkbox" name="jacket_included" style="transform:scale(1.6); margin-right:12px;">
+                Dust jacket included? (hardcover only)
+            </label>
+            <div class="muted">If unsure, leave unchecked.</div>
+            </div>
+            """
+        else:
+            jacket_text = "Yes" if jacket_val else "No"
+            jacket_block = f"""
+            <div class="card">
+            <div style="font-size:22px;">Dust jacket included: <b>{jacket_text}</b></div>
+            <div class="muted">Locked once set.</div>
+            </div>
+            """
+
+        # Notes: editable during capture; capped at 200 via UI + server validation
+        notes_prefill = (notes_val or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;")
+        notes_block = f"""
+        <div class="card">
+        <label class="label">Notes (library markings, writing inside, any other defects)</label>
+        <textarea name="notes" maxlength="200" rows="5"
+            style="font-size:22px; padding:16px; width:100%; border-radius:16px;">{notes_prefill}</textarea>
+        <div class="muted">Max 200 characters.</div>
+        </div>
+        """
+
         return f"""
         <div class="card">
-          <h2>{title}</h2>
-          <form method="post" action="/capture/upload/{image_type}" enctype="multipart/form-data">
+        <h2>{title}</h2>
+        <form method="post" action="/capture/upload/{image_type}" enctype="multipart/form-data">
             {cond_select() if condition_needed else ""}
+
+            {jacket_block}
+            {notes_block}
 
             <label class="label">Photo</label>
             <label for="file_{image_type}" class="med file-button">
-              Choose photo (opens camera)
+            Choose photo (opens camera)
             </label>
             <input id="file_{image_type}" class="file-input"
-                   type="file" name="file"
-                   accept="image/*" capture="environment" required />
+                type="file" name="file"
+                accept="image/*" capture="environment" required />
 
             <div class="spacer"></div>
             <div class="muted">After choosing the photo, press upload below.</div>
 
             <div class="spacer"></div>
             <button type="submit" class="big">{button_text}</button>
-          </form>
+        </form>
         </div>
         """
+
 
     msg_html = f"<div class='card' style='border-color:#f1b0b7;'><b style='font-size:20px;'>{message}</b></div>" if message else ""
 
@@ -205,12 +240,22 @@ def _render_capture_page(bin_value, current_book_id, progress=None, message: str
     copy_line = "✅ copyright uploaded" if has_copyright else "❌ copyright missing"
     cond_line = condition if condition else "not set"
 
+    jacket_display = (
+        "unknown" if progress["jacket_included"] is None
+        else ("yes" if progress["jacket_included"] else "no")
+    )
+    notes_display = progress["notes"] or ""
+
     # Enforce order: cover first, then copyright, then finish
     condition_needed = (condition is None)
+    jacket_val = progress.get("jacket_included")
+    notes_val = progress.get("notes")
+
     if not has_cover:
-        main_action_html = upload_form("cover", condition_needed)
+        main_action_html = upload_form("cover", condition_needed, jacket_val, notes_val)
     elif not has_copyright:
-        main_action_html = upload_form("copyright", condition_needed)
+        main_action_html = upload_form("copyright", condition_needed, jacket_val, notes_val)
+
     else:
         main_action_html = f"""
         <div class="card">
@@ -241,6 +286,8 @@ def _render_capture_page(bin_value, current_book_id, progress=None, message: str
           <div style="font-size:22px; margin:8px 0;">{cover_line}</div>
           <div style="font-size:22px; margin:8px 0;">{copy_line}</div>
           <div style="font-size:22px; margin:8px 0;">Condition: <b>{cond_line}</b></div>
+          <div style="font-size:22px; margin:8px 0;">Jacket included: <b>{jacket_display}</b></div>
+          <div style="font-size:22px; margin:8px 0;">Notes: <b>{notes_display if notes_display else "—"}</b></div>
         </div>
 
         {main_action_html}
@@ -314,6 +361,8 @@ async def capture_upload(
     image_type: str,
     file: UploadFile = File(...),
     condition: str | None = Form(None),
+    jacket_included: str | None = Form(None),
+    notes: str | None = Form(None),
 ):
     if image_type not in {"cover", "copyright"}:
         request.session["capture_msg"] = "Invalid image type."
@@ -340,6 +389,19 @@ async def capture_upload(
         except ValueError as e:
             request.session["capture_msg"] = str(e)
             return RedirectResponse(url="/capture", status_code=303)
+
+
+    # Jacket: lock once set (treat checkbox as True/False)
+    if progress["jacket_included"] is None:
+        jacket_bool = True if jacket_included == "on" else False
+        db.set_jacket_once(book_id, jacket_bool)
+
+    # Notes: allow updating during capture (up to 200 chars)
+    try:
+         db.set_notes(book_id, notes)
+    except ValueError as e:
+        request.session["capture_msg"] = str(e)
+        return RedirectResponse(url="/capture", status_code=303)
 
     # Save locally and record in DB (reuse your existing pattern)
     gcs_path = gcs.upload_image(book_id, image_type, file_bytes)

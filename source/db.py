@@ -5,7 +5,7 @@ from contextlib import contextmanager # what is this for?
 from typing import Iterator, Dict, Any, List # what is this for?
 
 from sqlalchemy import (
-    Column, Integer, String, DateTime, ForeignKey, UniqueConstraint, func,)
+    Boolean, Column, Integer, String, DateTime, ForeignKey, UniqueConstraint, func,)
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker, Session, joinedload, declarative_base, relationship
 
@@ -21,6 +21,9 @@ class Book(Base):
 
     bin = Column(Integer, nullable=True)
     condition = Column(String, nullable=True)
+
+    jacket_included = Column(Boolean, nullable=True)
+    notes = Column(String(200), nullable=True)
 
     created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now(),)
 
@@ -214,6 +217,10 @@ def read_entry(book_id: int) -> Dict[str, Any]:
         return {
             "id": book.id,
             "status": book.status,
+            "bin": book.bin,
+	    "condition": book.condition,
+	    "jacket_included": book.jacket_included,
+        "notes": book.notes,
             "created_at": book.created_at.isoformat() if book.created_at else None,
             "updated_at": book.updated_at.isoformat() if book.updated_at else None,
             "images": images,
@@ -237,9 +244,40 @@ def get_book_progress(book_id: int) -> dict:
             "status": book.status,
             "bin": book.bin,
             "condition": book.condition,
+            "jacket_included": book.jacket_included,
+            "notes": book.notes,
             "has_cover": "cover" in types,
             "has_copyright": "copyright" in types,
         }
+
+def set_jacket_once(book_id: int, jacket_included: bool) -> None:
+    with get_session() as session:
+        book = session.get(Book, book_id)
+        if book is None:
+            raise ValueError(f"Book {book_id} not found")
+
+        if book.jacket_included is None:
+            book.jacket_included = jacket_included
+            session.flush()
+
+
+def set_notes(book_id: int, notes: str | None) -> None:
+    if notes is None:
+        return
+    notes = notes.strip()
+    if not notes:
+        return
+    if len(notes) > 200:
+        raise ValueError("Notes must be 200 characters or fewer")
+
+    with get_session() as session:
+        book = session.get(Book, book_id)
+        if book is None:
+            raise ValueError(f"Book {book_id} not found")
+
+        # Allow updating notes during capture (easy + forgiving)
+        book.notes = notes
+        session.flush()
 
 
 def save_extraction(book_id: int, metadata: dict) -> int:
