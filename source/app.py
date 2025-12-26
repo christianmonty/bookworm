@@ -159,7 +159,7 @@ def _render_capture_page(bin_value, current_book_id, progress=None, message: str
             {notes_block}
 
             <label class="label">Photo</label>
-            <label for="file_{image_type}" class="med file-button">
+            <label for="file_{image_type}" class="med file-button" style="width:80%; margin:0 auto; display:block;">
             Choose photo (opens camera)
             </label>
             <input id="file_{image_type}" class="file-input"
