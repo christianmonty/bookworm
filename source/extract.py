@@ -1,25 +1,26 @@
 # source/extract.py
 import base64
 import json
-from pathlib import Path
 from typing import Any, Dict
 from openai import OpenAI
 
 client = OpenAI()
 
+
 def _b64_data_url_jpg(image_bytes: bytes) -> str:
     b64 = base64.b64encode(image_bytes).decode("ascii")
     return f"data:image/jpeg;base64,{b64}"
 
-def _read_bytes(path_str: str) -> bytes:
-    return Path(path_str).read_bytes()
 
-def extract_from_images(cover_path: str, copyright_path: str) -> Dict[str, Any]:
-    cover_bytes = _read_bytes(cover_path)
-    copy_bytes = _read_bytes(copyright_path)
+def extract_from_images(cover_bytes: bytes, copyright_bytes: bytes) -> Dict[str, Any]:
+    """
+    GCS-first: callers pass image bytes (not file paths).
+    """
+    if not cover_bytes or not copyright_bytes:
+        raise ValueError("cover_bytes and copyright_bytes must be non-empty")
 
     prompt_item = {
-        "type": "input_text",   # <-- IMPORTANT: was "text", must be "input_text"
+        "type": "input_text",
         "text": (
             "You are extracting book metadata from two images.\n"
             "Rules:\n"
@@ -51,13 +52,12 @@ def extract_from_images(cover_path: str, copyright_path: str) -> Dict[str, Any]:
             "role": "user",
             "content": [
                 prompt_item,
-                {"type": "input_image", "image_url": _b64_data_url_jpg(copy_bytes)},
+                {"type": "input_image", "image_url": _b64_data_url_jpg(copyright_bytes)},
                 {"type": "input_image", "image_url": _b64_data_url_jpg(cover_bytes)},
             ],
         }],
     )
 
-    # The SDK gives you a combined text view here
     text = resp.output_text
     data = json.loads(text)
     data["_model"] = "gpt-4.1-mini"

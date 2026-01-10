@@ -1,36 +1,77 @@
-# all Google Cloud Storage stuff
-# takes images from local storage, puts into GCS
-# returns address path of where uploaded image is in GCS
+# source/gcs.py
+from __future__ import annotations
+
+import os
+from typing import Tuple
+from urllib.parse import urlparse
+
+from google.cloud import storage
+
+ALLOWED_IMAGE_TYPES = {"cover", "copyright"}
 
 
-# GET connected to GCS, figure out how to send an image there, named correctly?
-# think of automated way to name every other at some point...little applet!
+def _project() -> str | None:
+    return os.environ.get("GOOGLE_CLOUD_PROJECT") or None
 
-from pathlib import Path
 
-BASE_DIR = Path(__file__).resolve().parents[1]
-LOCAL_STORE = BASE_DIR / "local_store"
+def bucket_name() -> str:
+    bucket = os.environ.get("GCS_BUCKET")
+    if not bucket:
+        raise RuntimeError("GCS_BUCKET env var is not set")
+    return bucket
 
-#Goal is take bytes from FastAPI upload, write to disk, return "path" string
-def upload_image(book_id: int, image_type: str, file_bytes: bytes) -> str:
-    if file_bytes is None:
-        raise ValueError("file_bytes cannot be None")
 
-    if image_type not in {"cover", "copyright"}:
+def object_key(book_id: int, image_type: str) -> str:
+    # REQUIRED format
+    return f"raw/{book_id}/{image_type}.jpg"
+
+
+def gs_uri(bucket: str, key: str) -> str:
+    return f"gs://{bucket}/{key}"
+
+
+def parse_gs_uri(uri: str) -> Tuple[str, str]:
+    if not uri.startswith("gs://"):
+        raise ValueError(f"Not a gs:// uri: {uri}")
+    p = urlparse(uri)
+    b = p.netloc
+    k = p.path.lstrip("/")
+    if not b or not k:
+        raise ValueError(f"Invalid gs:// uri: {uri}")
+    return b, k
+
+
+def upload_image(book_id: int, image_type: str, file_bytes: bytes, *, overwrite: bool = True) -> str:
+    """
+    Upload bytes to GCS at raw/{book_id}/{image_type}.jpg
+    Returns the canonical gs://... storage_path.
+    """
+    if not file_bytes:
+        raise ValueError("file_bytes cannot be empty")
+    if image_type not in ALLOWED_IMAGE_TYPES:
         raise ValueError("image_type must be 'cover' or 'copyright'")
 
-    #Now need to create path from directory and type signifiers
-    out_dir = LOCAL_STORE / "raw" / str(book_id)
-    out_dir.mkdir(parents=True, exist_ok=True)
+    bkt = bucket_name()
+    key = object_key(book_id, image_type)
 
-    out_path = out_dir / f"{image_type}.jpg"
-    out_path.write_bytes(file_bytes)
+    client = storage.Client(project=_project())
+    blob = client.bucket(bkt).blob(key)
 
-    return str(out_path)
+    if not overwrite and blob.exists():
+        return gs_uri(bkt, key)
+
+    blob.upload_from_string(file_bytes, content_type="image/jpeg")
+    return gs_uri(bkt, key)
 
 
-    # upload to GCP per following schema:
-    # books/{book_id}/{image_type}.jpg # so see bookid, pagetype, jpg
+def read_bytes(storage_path: str) -> bytes:
+    """
+    Read bytes from gs://... only (GCS-first). If someone left a local path in DB, fail loudly.
+    """
+    if not storage_path.startswith("gs://"):
+        raise ValueError(f"Expected gs://... storage_path, got: {storage_path}")
 
-    # do we have to use this schema to take book from local storage to GCS?
-    # if so, create path to image from here and make sure that's uploaded to GCS
+    bkt, key = parse_gs_uri(storage_path)
+    client = storage.Client(project=_project())
+    blob = client.bucket(bkt).blob(key)
+    return blob.download_as_bytes()
