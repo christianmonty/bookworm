@@ -7,8 +7,7 @@ load_dotenv(Path(__file__).resolve().parents[1] / ".env")
 import os
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, UploadFile, File, HTTPException, Request, Form, Response
-from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
-from fastapi.staticfiles import StaticFiles
+from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse, Response
 from starlette.middleware.sessions import SessionMiddleware
 
 from source import db
@@ -22,8 +21,6 @@ async def lifespan(app: FastAPI):
     # can optionally add db shutdown cleanup
 
 app = FastAPI(lifespan=lifespan) # create a FastAPI instance
-
-app.mount("/raw", StaticFiles(directory=str((gcs.LOCAL_STORE / "raw").as_posix())), name="raw")
 
 app.add_middleware(
     SessionMiddleware,
@@ -47,7 +44,21 @@ async def get_entry(book_id: int): # path operation function, async means not bl
 	except ValueError as e:
 		raise HTTPException(status_code=404, detail=str(e))
 
+@app.get("/books/{book_id}/images/{image_type}")
+async def serve_book_image(book_id: int, image_type: str):
+    if image_type not in {"cover", "copyright"}:
+        raise HTTPException(status_code=400, detail="image_type must be 'cover' or 'copyright'")
 
+    storage_path = db.load_path(book_id, image_type)
+    if not storage_path:
+        raise HTTPException(status_code=404, detail="Image not found in DB")
+
+    try:
+        img_bytes = gcs.read_bytes(storage_path)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to load image: {e}")
+
+    return Response(content=img_bytes, media_type="image/jpeg")
 
 # POST /books/{book_id}/images/{image_type}
 # accepts an upload, calls gcs.upload_image, writes to db for images
@@ -61,10 +72,10 @@ async def upload_book_image(book_id: int, image_type: str, file: UploadFile = Fi
 		raise HTTPException(status_code=400, detail="Uploaded file was empty")
 
 	# Upload the photo locally
-	gcs_path = gcs.upload_image(book_id, image_type, file_bytes)
+	storage_path = gcs.upload_image(book_id, image_type, file_bytes)
 
 	try:
-		db.save_image_record(book_id, image_type, gcs_path)
+		db.save_image_record(book_id, image_type, storage_path)
 	except ValueError as e:
 		raise HTTPException(status_code=404, detail=str(e))
 
@@ -73,11 +84,7 @@ async def upload_book_image(book_id: int, image_type: str, file: UploadFile = Fi
 	elif image_type == "copyright":
 		db.mark_status(book_id, "images_uploaded")
 
-	return {"book_id": book_id, "image_type": image_type, "gcs_path": gcs_path}
-
-
-# POST /jobs/extract?limit=10 point is to do the OpenAI calls in batches
-# Calls pipeline.process_batch(limit)
+	return {"book_id": book_id, "image_type": image_type, "storage_path": storage_path}
 
 
 # Rendering the capture page in HTML
@@ -431,9 +438,9 @@ async def capture_upload(
         request.session["capture_msg"] = str(e)
         return RedirectResponse(url="/capture", status_code=303)
 
-    # Save locally and record in DB (reuse your existing pattern)
-    gcs_path = gcs.upload_image(book_id, image_type, file_bytes)
-    db.save_image_record(book_id, image_type, gcs_path)
+    # Save photo to GCS and record in DB
+    storage_path = gcs.upload_image(book_id, image_type, file_bytes)
+    db.save_image_record(book_id, image_type, storage_path)
 
     # Optional: keep your status semantics
     if image_type == "cover":
@@ -503,7 +510,10 @@ async def run_extract_job(limit: int = 10):
             continue
 
         try:
-            data = extract.extract_from_images(cover_path, copy_path)
+            cover_bytes = gcs.read_bytes(cover_path)
+            copy_bytes = gcs.read_bytes(copy_path)
+            data = extract.extract_from_images(cover_bytes, copy_bytes)
+
             flags = data.get("flags") or []
             confidence = data.get("confidence")
 
@@ -566,11 +576,12 @@ async def review_extractions():
     """
 
 
+
 @app.get("/review/books/{book_id}/extraction", response_class=HTMLResponse)
 async def review_extraction_detail(book_id: int):
     ex = db.read_extraction(book_id)
-    cover_url = f"/raw/{book_id}/cover.jpg"
-    copy_url = f"/raw/{book_id}/copyright.jpg"
+    cover_url = f"/books/{book_id}/images/cover"
+    copy_url = f"/books/{book_id}/images/copyright"
 
     data_pretty = ex["data"]
     import json as _json
@@ -694,3 +705,6 @@ async def override_extraction_endpoint(book_id: int, request: Request):
         return JSONResponse({"ok": True})
     except Exception as e:
         return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
+
+
+

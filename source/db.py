@@ -162,7 +162,7 @@ def set_condition_once(book_id: int, condition: str) -> None:
             book.condition = condition
             session.flush()
 
-def save_image_record(book_id: int, image_type: str, gcs_path: str) -> int:
+def save_image_record(book_id: int, image_type: str, storage_path: str) -> int:
     # save image record into book_images table
     # if pair (book_id, image_type) exists, update storage_path
     # otherwise, insert a new record to BookImage db
@@ -183,14 +183,14 @@ def save_image_record(book_id: int, image_type: str, gcs_path: str) -> int:
         ).scalar_one_or_none()
 
         if existing:
-            existing.storage_path = gcs_path
+            existing.storage_path = storage_path
             session.flush()
             return existing.id
 
         img = BookImage(
             book_id=book_id,
             image_type=image_type,
-            storage_path=gcs_path,
+            storage_path=storage_path,
         )
         session.add(img)
         session.flush()
