@@ -100,8 +100,13 @@ STYLE = """
 </style>
 """
 
-def _render_capture_page(bin_value, current_book_id, progress=None, message: str | None = None) -> str:
+def _render_capture_page(bin_value, owner_value, current_book_id, progress=None, message: str | None = None) -> str:
     cond_options = ["new", "like_new", "very_good", "good", "acceptable"]
+    owner_value = owner_value or "Terry"
+    sel_terry = "selected" if owner_value == "Terry" else ""
+    sel_christian = "selected" if owner_value == "Christian" else ""
+    sel_maria = "selected" if owner_value == "Maria" else ""
+
 
     def cond_select() -> str:
         opts = "\n".join([f'<option value="{c}">{c}</option>' for c in cond_options])
@@ -194,12 +199,24 @@ def _render_capture_page(bin_value, current_book_id, progress=None, message: str
             <h1>Bookworm Capture</h1>
             {msg_html}
 
-            <div class="card">
+            <div class="card">=
               <form method="post" action="/capture/bin">
-                <label class="label">Select bin (numeric)</label>
-                <input name="bin" type="number" min="1" required />
-                <div class="spacer"></div>
-                <button type="submit" class="big">Set bin</button>
+                <div style="margin:10px 0;">
+                    <div style="font-size:20px; margin-bottom:6px;">Bin</div>
+                    <input type="number" name="bin" inputmode="numeric" required
+                        style="font-size:22px; padding:12px; width:100%;"/>
+                </div>
+
+                <div style="margin:10px 0;">
+                    <div style="font-size:20px; margin-bottom:6px;">Owner</div>
+                    <select name="owner" required style="font-size:22px; padding:12px; width:100%;">
+                    <option value="Terry" {sel_terry}>Terry</option>
+                    <option value="Christian" {sel_christian}>Christian</option>
+                    <option value="Maria" {sel_maria}>Maria</option>
+                    </select>
+                </div>
+
+                <button type="submit" style="font-size:22px; padding:12px 16px; width:100%;">Set bin</button>
               </form>
             </div>
           </body>
@@ -314,6 +331,7 @@ def _render_capture_page(bin_value, current_book_id, progress=None, message: str
 @app.get("/capture", response_class=HTMLResponse)
 async def capture(request: Request):
     bin_value = request.session.get("bin")
+    owner_value = request.session.get("owner")
     current_book_id = request.session.get("current_book_id")
     message = request.session.pop("capture_msg", None)
 
@@ -326,25 +344,29 @@ async def capture(request: Request):
             request.session.pop("current_book_id", None)
             current_book_id = None
 
-    html = _render_capture_page(bin_value, current_book_id, progress=progress, message=message)
+    html = _render_capture_page(bin_value, owner_value, current_book_id, progress=progress, message=message)
     return HTMLResponse(content=html)
 
 
 @app.post("/capture/bin")
-async def set_bin(request: Request, bin: int = Form(...)):
+async def set_bin(request: Request, bin: int = Form(...), owner: str = Form(...)):
     request.session["bin"] = bin
+    request.session["owner"] = owner
     return RedirectResponse(url="/capture", status_code=303)
 
 
 @app.post("/capture/clear_bin")
 async def clear_bin(request: Request):
     request.session.pop("bin", None)
+    request.session.pop("owner", None)
     return RedirectResponse(url="/capture", status_code=303)
 
 
 @app.post("/capture/next")
 async def next_book(request: Request):
     bin_value = request.session.get("bin")
+    owner_value = request.session.get("owner")
+
     if bin_value is None:
         request.session["capture_msg"] = "Select a bin first."
         return RedirectResponse(url="/capture", status_code=303)
@@ -355,6 +377,8 @@ async def next_book(request: Request):
         return RedirectResponse(url="/capture", status_code=303)
 
     book_id = db.create_book(bin=bin_value, status="in_progress")
+    db.set_owner(book_id, owner_value or "Terry")
+
     request.session["current_book_id"] = book_id
     return RedirectResponse(url="/capture", status_code=303)
 

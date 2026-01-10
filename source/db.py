@@ -21,6 +21,7 @@ class Book(Base):
 
     bin = Column(Integer, nullable=True)
     condition = Column(String, nullable=True)
+    owner = Column(String, nullable=True)
 
     jacket_included = Column(Boolean, nullable=True)
     notes = Column(String(200), nullable=True)
@@ -253,6 +254,7 @@ def read_entry(book_id: int) -> Dict[str, Any]:
             "id": book.id,
             "status": book.status,
             "bin": book.bin,
+            "owner": book.owner,
 	    "condition": book.condition,
 	    "jacket_included": book.jacket_included,
         "notes": book.notes,
@@ -278,6 +280,7 @@ def get_book_progress(book_id: int) -> dict:
             "id": book.id,
             "status": book.status,
             "bin": book.bin,
+            "owner": book.owner,
             "condition": book.condition,
             "jacket_included": book.jacket_included,
             "notes": book.notes,
@@ -312,6 +315,14 @@ def set_notes(book_id: int, notes: str | None) -> None:
 
         # Allow updating notes during capture (easy + forgiving)
         book.notes = notes
+        session.flush()
+
+def set_owner(book_id: int, owner: str) -> None:
+    with get_session() as session:
+        book = session.get(Book, book_id)
+        if book is None:
+            raise ValueError(f"Book {book_id} not found")
+        book.owner = owner
         session.flush()
 
 
@@ -507,3 +518,4 @@ def override_extraction(book_id: int, isbn10: str | None, isbn13: str | None, ti
         ex.flags_json = json.dumps(flags)
 
         session.flush()
+
