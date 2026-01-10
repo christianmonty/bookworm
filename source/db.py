@@ -408,7 +408,7 @@ def upsert_extraction(
 def list_extractions() -> List[Dict[str, Any]]:
     with get_session() as session:
         rows = session.execute(
-            select(BookExtraction).order_by(BookExtraction.updated_at.desc()).limit(limit)
+            select(BookExtraction).order_by(BookExtraction.updated_at.desc())
         ).scalars().all()
 
         out: List[Dict[str, Any]] = []

@@ -2,10 +2,7 @@
 import base64
 import json
 from pathlib import Path
-from typing import Any, Dict, Optional
-
-# NOTE: SDK interfaces change over time. This is the OpenAI Python SDK v1-style pattern.
-# If installed SDK differs, this is the only file we need to tweak.
+from typing import Any, Dict
 from openai import OpenAI
 
 client = OpenAI()
@@ -15,15 +12,14 @@ def _b64_data_url_jpg(image_bytes: bytes) -> str:
     return f"data:image/jpeg;base64,{b64}"
 
 def _read_bytes(path_str: str) -> bytes:
-    p = Path(path_str)
-    return p.read_bytes()
+    return Path(path_str).read_bytes()
 
 def extract_from_images(cover_path: str, copyright_path: str) -> Dict[str, Any]:
     cover_bytes = _read_bytes(cover_path)
     copy_bytes = _read_bytes(copyright_path)
 
-    prompt = {
-        "type": "text",
+    prompt_item = {
+        "type": "input_text",   # <-- IMPORTANT: was "text", must be "input_text"
         "text": (
             "You are extracting book metadata from two images.\n"
             "Rules:\n"
@@ -49,20 +45,19 @@ def extract_from_images(cover_path: str, copyright_path: str) -> Dict[str, Any]:
         ),
     }
 
-    # Using Responses API-style message content. If your SDK differs, adapt here.
     resp = client.responses.create(
         model="gpt-4.1-mini",
         input=[{
             "role": "user",
             "content": [
-                prompt,
+                prompt_item,
                 {"type": "input_image", "image_url": _b64_data_url_jpg(copy_bytes)},
                 {"type": "input_image", "image_url": _b64_data_url_jpg(cover_bytes)},
             ],
         }],
     )
 
-    # SDK returns text; parse JSON
+    # The SDK gives you a combined text view here
     text = resp.output_text
     data = json.loads(text)
     data["_model"] = "gpt-4.1-mini"
