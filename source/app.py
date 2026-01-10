@@ -7,7 +7,7 @@ load_dotenv(Path(__file__).resolve().parents[1] / ".env")
 import os
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, UploadFile, File, HTTPException, Request, Form, Response
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.sessions import SessionMiddleware
 
@@ -519,7 +519,7 @@ async def run_extract_job(limit: int = 10):
 
 @app.get("/review/extractions", response_class=HTMLResponse)
 async def review_extractions():
-    rows = db.list_extractions(limit=50)
+    rows = db.list_extractions()
 
     items = ""
     for r in rows:
@@ -555,6 +555,12 @@ async def review_extraction_detail(book_id: int):
     flags = ex["flags"] or []
     flags_str = ", ".join(flags) if flags else "—"
 
+    # Prefill values for manual override form
+    isbn13_val = ex["isbn13"] or ""
+    isbn10_val = ex["isbn10"] or ""
+    title_val = ex["title"] or ""
+    author_val = ex["author"] or ""
+
     return f"""
     <html><body style="max-width:980px; margin:20px; font-family:system-ui;">
       <h1>Book {book_id} — Extraction</h1>
@@ -579,8 +585,88 @@ async def review_extraction_detail(book_id: int):
         <div><b>Author:</b> {ex["author"] or "—"}</div>
         <div><b>Confidence:</b> {ex["confidence"] if ex["confidence"] is not None else "—"}</div>
         <div><b>Flags:</b> {flags_str}</div>
-        <div style="margin-top:10px;"><b>Raw JSON</b></div>
+      </div>
+
+      <!-- Manual override block -->
+      <div style="border:1px solid #ddd; padding:14px; border-radius:12px; margin-top:14px;">
+        <h3 style="margin-top:0;">Manual override (mark done)</h3>
+
+        <div style="display:flex; gap:12px; flex-wrap:wrap;">
+          <div style="flex:1; min-width:220px;">
+            <label>ISBN-13</label><br/>
+            <input id="isbn13" value="{isbn13_val}" style="font-size:18px; padding:10px; width:100%;"/>
+          </div>
+          <div style="flex:1; min-width:220px;">
+            <label>ISBN-10</label><br/>
+            <input id="isbn10" value="{isbn10_val}" style="font-size:18px; padding:10px; width:100%;"/>
+          </div>
+        </div>
+
+        <div style="display:flex; gap:12px; flex-wrap:wrap; margin-top:12px;">
+          <div style="flex:1; min-width:220px;">
+            <label>Title</label><br/>
+            <input id="title" value="{title_val}" style="font-size:18px; padding:10px; width:100%;"/>
+          </div>
+          <div style="flex:1; min-width:220px;">
+            <label>Author</label><br/>
+            <input id="author" value="{author_val}" style="font-size:18px; padding:10px; width:100%;"/>
+          </div>
+        </div>
+
+        <div style="margin-top:14px;">
+          <button id="saveBtn" style="font-size:20px; padding:12px 16px;">Save override &amp; mark done</button>
+          <span id="saveMsg" style="margin-left:12px; font-size:18px;"></span>
+        </div>
+      </div>
+
+      <div style="border:1px solid #ddd; padding:14px; border-radius:12px; margin-top:14px;">
+        <div style="margin-top:0;"><b>Raw JSON</b></div>
         <pre style="white-space:pre-wrap; font-size:14px; background:#f7f7f7; padding:12px; border-radius:12px;">{data_str}</pre>
       </div>
+
+      <script>
+        const bookId = {book_id};
+        const saveBtn = document.getElementById("saveBtn");
+        const saveMsg = document.getElementById("saveMsg");
+
+        saveBtn.addEventListener("click", async () => {{
+          saveMsg.textContent = "Saving...";
+          const payload = {{
+            isbn13: document.getElementById("isbn13").value,
+            isbn10: document.getElementById("isbn10").value,
+            title: document.getElementById("title").value,
+            author: document.getElementById("author").value
+          }};
+
+          try {{
+            const res = await fetch(`/review/books/${{bookId}}/override`, {{
+              method: "POST",
+              headers: {{"Content-Type": "application/json"}},
+              body: JSON.stringify(payload)
+            }});
+            const data = await res.json();
+            if (!data.ok) throw new Error(data.error || "Unknown error");
+            saveMsg.textContent = "Saved ✅ Reloading...";
+            setTimeout(() => location.reload(), 500);
+          }} catch (err) {{
+            saveMsg.textContent = "Error: " + err.message;
+          }}
+        }});
+      </script>
     </body></html>
     """
+
+
+async def override_extraction_endpoint(book_id: int, request: Request):
+    payload = await request.json()
+    try:
+        db.override_extraction(
+            book_id=book_id,
+            isbn10=payload.get("isbn10"),
+            isbn13=payload.get("isbn13"),
+            title=payload.get("title"),
+            author=payload.get("author"),
+        )
+        return JSONResponse({"ok": True})
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=400)

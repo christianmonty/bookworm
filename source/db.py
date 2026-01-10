@@ -460,3 +460,50 @@ def read_extraction(book_id: int) -> Dict[str, Any]:
             "error": ex.error,
             "updated_at": ex.updated_at.isoformat() if ex.updated_at else None,
         }
+
+
+def override_extraction(book_id: int, isbn10: str | None, isbn13: str | None, title: str | None, author: str | None) -> None:
+    """Manual override: set fields + mark status done."""
+    def clean(s: str | None) -> str | None:
+        if s is None:
+            return None
+        s = s.strip()
+        return s if s else None
+
+    isbn10 = clean(isbn10)
+    isbn13 = clean(isbn13)
+    title = clean(title)
+    author = clean(author)
+
+    with get_session() as session:
+        ex = session.execute(
+            select(BookExtraction).where(BookExtraction.book_id == book_id)
+        ).scalar_one_or_none()
+
+        if ex is None:
+            # create a new extraction record if missing
+            ex = BookExtraction(book_id=book_id)
+            session.add(ex)
+            session.flush()
+
+        # Update fields
+        ex.isbn10 = isbn10
+        ex.isbn13 = isbn13
+        ex.title = title
+        ex.author = author
+
+        # Mark done + clear error
+        ex.status = "done"
+        ex.error = None
+
+        # Add a manual flag (preserve existing flags if any)
+        flags = []
+        try:
+            flags = json.loads(ex.flags_json) if ex.flags_json else []
+        except Exception:
+            flags = []
+        if "manual_override" not in flags:
+            flags.append("manual_override")
+        ex.flags_json = json.dumps(flags)
+
+        session.flush()
