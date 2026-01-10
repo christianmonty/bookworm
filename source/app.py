@@ -8,10 +8,12 @@ import os
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, UploadFile, File, HTTPException, Request, Form, Response
 from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.staticfiles import StaticFiles
 from starlette.middleware.sessions import SessionMiddleware
 
 from source import db
 from source import gcs
+from source import extract
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -20,6 +22,8 @@ async def lifespan(app: FastAPI):
     # can optionally add db shutdown cleanup
 
 app = FastAPI(lifespan=lifespan) # create a FastAPI instance
+
+app.mount("/raw", StaticFiles(directory=str((gcs.LOCAL_STORE / "raw").as_posix())), name="raw")
 
 app.add_middleware(
     SessionMiddleware,
@@ -453,3 +457,130 @@ async def apple_touch_icon():
 @app.get("/apple-touch-icon-precomposed.png")
 async def apple_touch_icon_precomposed():
     return Response(status_code=204)
+
+
+# this is to run extraction job
+@app.post("/jobs/extract")
+async def run_extract_job(limit: int = 10):
+    book_ids = db.get_books_ready_for_extraction(limit=limit)
+    results = []
+
+    for book_id in book_ids:
+        cover_path = db.load_path(book_id, "cover")
+        copy_path = db.load_path(book_id, "copyright")
+        if not cover_path or not copy_path:
+            db.upsert_extraction(
+                book_id=book_id,
+                status="error",
+                isbn10=None, isbn13=None, title=None, author=None,
+                confidence=None, flags=["missing_images"], data=None,
+                model=None, error="Missing cover or copyright image path in DB",
+            )
+            continue
+
+        try:
+            data = extract.extract_from_images(cover_path, copy_path)
+            flags = data.get("flags") or []
+            confidence = data.get("confidence")
+
+            # Decide status
+            status = "done"
+            if data.get("isbn13") is None and data.get("isbn10") is None:
+                status = "needs_review"
+            if data.get("title") is None or data.get("author") is None:
+                status = "needs_review"
+
+            db.upsert_extraction(
+                book_id=book_id,
+                status=status,
+                isbn10=data.get("isbn10"),
+                isbn13=data.get("isbn13"),
+                title=data.get("title"),
+                author=data.get("author"),
+                confidence=confidence,
+                flags=flags,
+                data=data,
+                model=data.get("_model"),
+                error=None,
+            )
+            results.append({"book_id": book_id, "status": status})
+        except Exception as e:
+            db.upsert_extraction(
+                book_id=book_id,
+                status="error",
+                isbn10=None, isbn13=None, title=None, author=None,
+                confidence=None, flags=["exception"], data=None,
+                model=None, error=str(e),
+            )
+            results.append({"book_id": book_id, "status": "error", "error": str(e)})
+
+    return {"processed": results}
+
+
+@app.get("/review/extractions", response_class=HTMLResponse)
+async def review_extractions():
+    rows = db.list_extractions(limit=50)
+
+    items = ""
+    for r in rows:
+        items += (
+            f"<div style='border:1px solid #ddd; padding:12px; border-radius:12px; margin:10px 0;'>"
+            f"<div><b>Book {r['book_id']}</b> — {r['status']} — conf={r['confidence']}</div>"
+            f"<div>ISBN13: {r['isbn13'] or '—'}</div>"
+            f"<div>Title: {r['title'] or '—'}</div>"
+            f"<div>Author: {r['author'] or '—'}</div>"
+            f"<div style='margin-top:8px;'><a href='/review/books/{r['book_id']}/extraction'>Open</a></div>"
+            f"</div>"
+        )
+
+    return f"""
+    <html><body style="max-width:820px; margin:20px; font-family:system-ui;">
+      <h1>Extraction Review</h1>
+      <p><a href="/capture">Back to capture</a></p>
+      {items if items else "<p>No extractions yet.</p>"}
+    </body></html>
+    """
+
+
+@app.get("/review/books/{book_id}/extraction", response_class=HTMLResponse)
+async def review_extraction_detail(book_id: int):
+    ex = db.read_extraction(book_id)
+    cover_url = f"/raw/{book_id}/cover.jpg"
+    copy_url = f"/raw/{book_id}/copyright.jpg"
+
+    data_pretty = ex["data"]
+    import json as _json
+    data_str = _json.dumps(data_pretty, indent=2) if data_pretty else "—"
+
+    flags = ex["flags"] or []
+    flags_str = ", ".join(flags) if flags else "—"
+
+    return f"""
+    <html><body style="max-width:980px; margin:20px; font-family:system-ui;">
+      <h1>Book {book_id} — Extraction</h1>
+      <p><a href="/review/extractions">Back</a></p>
+
+      <div style="display:flex; gap:14px; flex-wrap:wrap;">
+        <div style="flex:1; min-width:320px;">
+          <h3>Cover</h3>
+          <img src="{cover_url}" style="max-width:100%; border:1px solid #ddd; border-radius:12px;" />
+        </div>
+        <div style="flex:1; min-width:320px;">
+          <h3>Copyright</h3>
+          <img src="{copy_url}" style="max-width:100%; border:1px solid #ddd; border-radius:12px;" />
+        </div>
+      </div>
+
+      <div style="border:1px solid #ddd; padding:14px; border-radius:12px; margin-top:14px;">
+        <div><b>Status:</b> {ex["status"]}</div>
+        <div><b>ISBN13:</b> {ex["isbn13"] or "—"}</div>
+        <div><b>ISBN10:</b> {ex["isbn10"] or "—"}</div>
+        <div><b>Title:</b> {ex["title"] or "—"}</div>
+        <div><b>Author:</b> {ex["author"] or "—"}</div>
+        <div><b>Confidence:</b> {ex["confidence"] if ex["confidence"] is not None else "—"}</div>
+        <div><b>Flags:</b> {flags_str}</div>
+        <div style="margin-top:10px;"><b>Raw JSON</b></div>
+        <pre style="white-space:pre-wrap; font-size:14px; background:#f7f7f7; padding:12px; border-radius:12px;">{data_str}</pre>
+      </div>
+    </body></html>
+    """
