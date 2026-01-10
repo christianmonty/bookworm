@@ -1,11 +1,11 @@
 # All DB related stuff
 from pathlib import Path
-import os
+import os, json
 from contextlib import contextmanager # what is this for?
 from typing import Iterator, Dict, Any, List # what is this for?
 
 from sqlalchemy import (
-    Column, Integer, String, DateTime, ForeignKey, UniqueConstraint, func,)
+    Boolean, Column, Integer, String, DateTime, ForeignKey, UniqueConstraint, func, Text, Float,)
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker, Session, joinedload, declarative_base, relationship
 
@@ -17,8 +17,14 @@ class Book(Base):
     __tablename__ = "books"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-
     status = Column(String, nullable=False, default="created")
+
+    bin = Column(Integer, nullable=True)
+    condition = Column(String, nullable=True)
+    owner = Column(String, nullable=True)
+
+    jacket_included = Column(Boolean, nullable=True)
+    notes = Column(String(200), nullable=True)
 
     created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now(),)
 
@@ -28,6 +34,13 @@ class Book(Base):
     images = relationship(
         "BookImage",
         back_populates="book",
+        cascade="all, delete-orphan",
+    )
+
+    extraction = relationship(
+        "BookExtraction",
+        back_populates="book",
+        uselist=False,
         cascade="all, delete-orphan",
     )
 
@@ -50,6 +63,34 @@ class BookImage(Base):
 
     #enforcing no duplicates in Images table
     __table_args__ = (UniqueConstraint("book_id", "image_type", name="uq_book_image_type"),)
+
+# This table for Book Extraction fields
+class BookExtraction(Base):
+    __tablename__ = "book_extraction"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+
+    book_id = Column(Integer, ForeignKey("books.id", ondelete="CASCADE"), nullable=False, unique=True)
+
+    status = Column(String, nullable=False, default="pending")  # pending|done|needs_review|error
+
+    isbn10 = Column(String, nullable=True)
+    isbn13 = Column(String, nullable=True)
+
+    title = Column(String, nullable=True)
+    author = Column(String, nullable=True)
+
+    confidence = Column(Float, nullable=True)
+    flags_json = Column(Text, nullable=True)   # store JSON string
+    data_json = Column(Text, nullable=True)    # store full JSON string
+
+    model = Column(String, nullable=True)
+    error = Column(Text, nullable=True)
+
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now())
+
+    book = relationship("Book", back_populates="extraction")
 
 
 # change below to Postgres (Cloud SQL) later
@@ -95,26 +136,38 @@ def get_session() -> Iterator[Session]:
         session.close()
 
 
+CONDITIONS = {"new", "like_new", "very_good", "good", "acceptable"} # tbd update
 
-def create_book() -> int:
+def create_book(bin: int | None = None, status: str = "created") -> int:
 
-    # include some sort of error check if book_id already in table!
     with get_session() as session:
-        book = Book() #tbd if initializer needed since default
+        book = Book(bin=bin, status=status)
         session.add(book)
-        session.flush() # pusehs to DB
+        session.flush() # pushes to DB
         return book.id
 
     # create initial book entry in books table with status 'created'
     # sql_query = """ INSERT INTO books VALUES (book_id, "created", CURRENT_TIMESTAMP, CURRENT_TIMESTAMP); """
 
+def set_condition_once(book_id: int, condition: str) -> None:
+    if condition not in CONDITIONS:
+        raise ValueError(f"Invalid condition: {condition}")
+
+    with get_session() as session:
+        book = session.get(Book, book_id)
+        if book is None:
+            raise ValueError(f"Book {book_id} not found")
+
+        if book.condition is None:
+            book.condition = condition
+            session.flush()
 
 def save_image_record(book_id: int, image_type: str, gcs_path: str) -> int:
     # save image record into book_images table
     # if pair (book_id, image_type) exists, update storage_path
     # otherwise, insert a new record to BookImage db
-    if image_type not in {"cover", "copywright"}:
-        raise ValueError("image_type must be 'cover' or 'copywright'")
+    if image_type not in {"cover", "copyright"}:
+        raise ValueError("image_type must be 'cover' or 'copyright'")
 
     with get_session() as session:
         # Ensure the book exists
@@ -200,6 +253,11 @@ def read_entry(book_id: int) -> Dict[str, Any]:
         return {
             "id": book.id,
             "status": book.status,
+            "bin": book.bin,
+            "owner": book.owner,
+	    "condition": book.condition,
+	    "jacket_included": book.jacket_included,
+        "notes": book.notes,
             "created_at": book.created_at.isoformat() if book.created_at else None,
             "updated_at": book.updated_at.isoformat() if book.updated_at else None,
             "images": images,
@@ -207,12 +265,257 @@ def read_entry(book_id: int) -> Dict[str, Any]:
 
 # sql_entry = """SELECT * FROM books WHERE book_id = book_id; """
 
-def save_extraction(book_id: int, metadata: dict) -> int:
-    # save extracted metadata into books table
+def get_book_progress(book_id: int) -> dict:
+    """Returns which images exist and current condition/status/bin."""
+    with get_session() as session:
+        book = (session.execute(
+            select(Book).options(joinedload(Book.images)).where(Book.id == book_id)
+        ).unique().scalar_one_or_none())
 
-    # TBD implemented
-    raise NotImplementedError("Add extraction columns/table before implementing this.")
+        if book is None:
+            raise ValueError(f"Book {book_id} not found")
 
-# sql_query = """UPDATE books
-# Need to add for-loop here for metadata into database, match up fields #
-# manually I guess
+        types = {img.image_type for img in book.images}
+        return {
+            "id": book.id,
+            "status": book.status,
+            "bin": book.bin,
+            "owner": book.owner,
+            "condition": book.condition,
+            "jacket_included": book.jacket_included,
+            "notes": book.notes,
+            "has_cover": "cover" in types,
+            "has_copyright": "copyright" in types,
+        }
+
+def set_jacket_once(book_id: int, jacket_included: bool) -> None:
+    with get_session() as session:
+        book = session.get(Book, book_id)
+        if book is None:
+            raise ValueError(f"Book {book_id} not found")
+
+        if book.jacket_included is None:
+            book.jacket_included = jacket_included
+            session.flush()
+
+
+def set_notes(book_id: int, notes: str | None) -> None:
+    if notes is None:
+        return
+    notes = notes.strip()
+    if not notes:
+        return
+    if len(notes) > 200:
+        raise ValueError("Notes must be 200 characters or fewer")
+
+    with get_session() as session:
+        book = session.get(Book, book_id)
+        if book is None:
+            raise ValueError(f"Book {book_id} not found")
+
+        # Allow updating notes during capture (easy + forgiving)
+        book.notes = notes
+        session.flush()
+
+def set_owner(book_id: int, owner: str) -> None:
+    with get_session() as session:
+        book = session.get(Book, book_id)
+        if book is None:
+            raise ValueError(f"Book {book_id} not found")
+        book.owner = owner
+        session.flush()
+
+
+# To prepare books for extraction
+def get_books_ready_for_extraction(limit: int = 10) -> List[int]:
+    """
+    Books that have BOTH images and do not have a completed extraction yet.
+    """
+    with get_session() as session:
+        # find books with cover+copyright in book_image
+        # and extraction missing or status != done
+        subq_cover = select(BookImage.book_id).where(BookImage.image_type == "cover").subquery()
+        subq_copy = select(BookImage.book_id).where(BookImage.image_type == "copyright").subquery()
+
+        # Books with both images
+        q = (
+            select(Book.id)
+            .where(Book.id.in_(select(subq_cover.c.book_id)))
+            .where(Book.id.in_(select(subq_copy.c.book_id)))
+        )
+
+        book_ids = [row[0] for row in session.execute(q).all()]
+
+        # Filter out already-done extractions
+        out: List[int] = []
+        for bid in book_ids:
+            ex = session.execute(
+                select(BookExtraction).where(BookExtraction.book_id == bid)
+            ).scalar_one_or_none()
+            if ex is None or ex.status != "done":
+                out.append(bid)
+            if len(out) >= limit:
+                break
+
+        return out
+
+
+def upsert_extraction(
+    book_id: int,
+    status: str,
+    isbn10: str | None,
+    isbn13: str | None,
+    title: str | None,
+    author: str | None,
+    confidence: float | None,
+    flags: list[str] | None,
+    data: dict | None,
+    model: str | None = None,
+    error: str | None = None,
+) -> None:
+    with get_session() as session:
+        book = session.get(Book, book_id)
+        if book is None:
+            raise ValueError(f"Book {book_id} not found")
+
+        existing = session.execute(
+            select(BookExtraction).where(BookExtraction.book_id == book_id)
+        ).scalar_one_or_none()
+
+        flags_json = None if flags is None else json.dumps(flags)
+        data_json = None if data is None else json.dumps(data)
+
+        if existing:
+            existing.status = status
+            existing.isbn10 = isbn10
+            existing.isbn13 = isbn13
+            existing.title = title
+            existing.author = author
+            existing.confidence = confidence
+            existing.flags_json = flags_json
+            existing.data_json = data_json
+            existing.model = model
+            existing.error = error
+            session.flush()
+            return
+
+        ex = BookExtraction(
+            book_id=book_id,
+            status=status,
+            isbn10=isbn10,
+            isbn13=isbn13,
+            title=title,
+            author=author,
+            confidence=confidence,
+            flags_json=flags_json,
+            data_json=data_json,
+            model=model,
+            error=error,
+        )
+        session.add(ex)
+        session.flush()
+
+
+def list_extractions() -> List[Dict[str, Any]]:
+    with get_session() as session:
+        rows = session.execute(
+            select(BookExtraction).order_by(BookExtraction.updated_at.desc())
+        ).scalars().all()
+
+        out: List[Dict[str, Any]] = []
+        for r in rows:
+            out.append({
+                "book_id": r.book_id,
+                "status": r.status,
+                "isbn13": r.isbn13,
+                "title": r.title,
+                "author": r.author,
+                "confidence": r.confidence,
+                "updated_at": r.updated_at.isoformat() if r.updated_at else None,
+                "error": r.error,
+            })
+        return out
+
+
+def read_extraction(book_id: int) -> Dict[str, Any]:
+    import json as _json
+    with get_session() as session:
+        ex = session.execute(
+            select(BookExtraction).where(BookExtraction.book_id == book_id)
+        ).scalar_one_or_none()
+        if ex is None:
+            raise ValueError(f"No extraction for book {book_id}")
+
+        flags = None
+        data = None
+        try:
+            flags = _json.loads(ex.flags_json) if ex.flags_json else None
+        except Exception:
+            flags = None
+        try:
+            data = _json.loads(ex.data_json) if ex.data_json else None
+        except Exception:
+            data = None
+
+        return {
+            "book_id": ex.book_id,
+            "status": ex.status,
+            "isbn10": ex.isbn10,
+            "isbn13": ex.isbn13,
+            "title": ex.title,
+            "author": ex.author,
+            "confidence": ex.confidence,
+            "flags": flags,
+            "data": data,
+            "model": ex.model,
+            "error": ex.error,
+            "updated_at": ex.updated_at.isoformat() if ex.updated_at else None,
+        }
+
+
+def override_extraction(book_id: int, isbn10: str | None, isbn13: str | None, title: str | None, author: str | None) -> None:
+    """Manual override: set fields + mark status done."""
+    def clean(s: str | None) -> str | None:
+        if s is None:
+            return None
+        s = s.strip()
+        return s if s else None
+
+    isbn10 = clean(isbn10)
+    isbn13 = clean(isbn13)
+    title = clean(title)
+    author = clean(author)
+
+    with get_session() as session:
+        ex = session.execute(
+            select(BookExtraction).where(BookExtraction.book_id == book_id)
+        ).scalar_one_or_none()
+
+        if ex is None:
+            # create a new extraction record if missing
+            ex = BookExtraction(book_id=book_id)
+            session.add(ex)
+            session.flush()
+
+        # Update fields
+        ex.isbn10 = isbn10
+        ex.isbn13 = isbn13
+        ex.title = title
+        ex.author = author
+
+        # Mark done + clear error
+        ex.status = "done"
+        ex.error = None
+
+        # Add a manual flag (preserve existing flags if any)
+        flags = []
+        try:
+            flags = json.loads(ex.flags_json) if ex.flags_json else []
+        except Exception:
+            flags = []
+        if "manual_override" not in flags:
+            flags.append("manual_override")
+        ex.flags_json = json.dumps(flags)
+
+        session.flush()
+
