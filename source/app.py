@@ -5,8 +5,9 @@ from pathlib import Path
 load_dotenv(Path(__file__).resolve().parents[1] / ".env")
 
 import os
+import json, logging, hashlib
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, UploadFile, File, HTTPException, Request, Form, Response
+from fastapi import FastAPI, Query, UploadFile, File, HTTPException, Request, Form, Response
 from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse, Response
 from starlette.middleware.sessions import SessionMiddleware
 
@@ -492,11 +493,13 @@ async def apple_touch_icon_precomposed():
 
 # this is to run extraction job
 @app.post("/jobs/extract")
-async def run_extract_job(limit: int = 10):
-    book_ids = db.get_books_ready_for_extraction(limit=limit)
+async def run_extract_job(limit: int | None = None, force: bool = False):
+    book_ids = db.get_books_ready_for_extraction(limit=limit, force=force)
     results = []
 
-    for book_id in book_ids:
+    total = len(book_ids)
+    for i, book_id in enumerate(book_ids, start=1):
+        print(f"[extract] {i}/{total} book_id={book_id}", flush=True)
         cover_path = db.load_path(book_id, "cover")
         copy_path = db.load_path(book_id, "copyright")
         if not cover_path or not copy_path:
@@ -708,3 +711,31 @@ async def override_extraction_endpoint(book_id: int, request: Request):
 
 
 
+logger = logging.getLogger("ebay_webhook")
+
+EBAY_VERIFICATION_TOKEN = "bookworm-dev-verify-token-2026-01-10"
+
+def compute_challenge_response(challenge_code: str, endpoint_url: str) -> str:
+    # MUST be: challengeCode + verificationToken + endpoint  (in that order)
+    msg = (challenge_code + EBAY_VERIFICATION_TOKEN + endpoint_url).encode("utf-8")
+    return hashlib.sha256(msg).hexdigest()
+
+@app.get("/ebay/account-deletion")
+async def ebay_validate(request: Request, challenge_code: str = Query(...)):
+    # endpoint must be EXACT URL eBay is validating, with https scheme
+    # Use Host + path; force https because eBay calls your ngrok URL via https
+    host = request.headers.get("host")
+    endpoint_url = f"https://{host}{request.url.path}"
+
+    digest = compute_challenge_response(challenge_code, endpoint_url)
+    return JSONResponse({"challengeResponse": digest})  # Content-Type: application/json
+
+@app.post("/ebay/account-deletion")
+async def ebay_account_deletion(request: Request):
+    body = await request.body()
+    logger.warning("eBay deletion event raw=%s", body.decode("utf-8", errors="replace"))
+    try:
+        logger.warning("eBay deletion event json=%s", json.loads(body))
+    except Exception:
+        pass
+    return Response(status_code=200)

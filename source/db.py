@@ -327,37 +327,39 @@ def set_owner(book_id: int, owner: str) -> None:
 
 
 # To prepare books for extraction
-def get_books_ready_for_extraction(limit: int = 10) -> List[int]:
+def get_books_ready_for_extraction(limit: int | None = None, force: bool = False) -> List[int]:
     """
-    Books that have BOTH images and do not have a completed extraction yet.
+    Books that have BOTH images.
+    - If force=False: exclude books whose extraction status is 'done'
+    - If force=True: include them anyway (re-run)
+    - If limit is None: return all
     """
     with get_session() as session:
-        # find books with cover+copyright in book_image
-        # and extraction missing or status != done
         subq_cover = select(BookImage.book_id).where(BookImage.image_type == "cover").subquery()
         subq_copy = select(BookImage.book_id).where(BookImage.image_type == "copyright").subquery()
 
-        # Books with both images
         q = (
             select(Book.id)
             .where(Book.id.in_(select(subq_cover.c.book_id)))
             .where(Book.id.in_(select(subq_copy.c.book_id)))
+            .order_by(Book.id.asc())
         )
 
         book_ids = [row[0] for row in session.execute(q).all()]
 
-        # Filter out already-done extractions
         out: List[int] = []
         for bid in book_ids:
             ex = session.execute(
                 select(BookExtraction).where(BookExtraction.book_id == bid)
             ).scalar_one_or_none()
-            if ex is None or ex.status != "done":
+
+            if force or ex is None or ex.status != "done":
                 out.append(bid)
-            if len(out) >= limit:
-                break
+                if limit is not None and len(out) >= limit:
+                    break
 
         return out
+
 
 
 def upsert_extraction(
