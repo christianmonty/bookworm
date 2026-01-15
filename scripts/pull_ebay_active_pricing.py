@@ -1,13 +1,17 @@
 # scripts/pull_ebay_active_pricing.py
 import asyncio
 import os
+import sys
 from pathlib import Path
+
+sys.path.append(str(Path(__file__).resolve().parents[1]))
 
 import httpx
 from dotenv import load_dotenv
 
 from source import db
-from source.ebay_pricing import fetch_price_estimate_for_book, fetch_with_retries
+from source.ebay_pricing import fetch_price_estimate_for_book, fetch_with_retries, clean_isbn
+
 
 # Load .env the same way as your app.py
 load_dotenv(Path(__file__).resolve().parents[1] / ".env")
@@ -28,7 +32,12 @@ async def main():
             book_id = b["book_id"]
             condition = b.get("condition")
 
-            isbn = b.get("isbn")
+            # Prefer isbn13 -> isbn10 -> isbn (depending on what db.list_books_for_pricing() returns)
+            raw_isbn = b.get("isbn13") or b.get("isbn10") or b.get("isbn")
+
+            # Normalize for eBay (removes hyphens/spaces, validates length)
+            isbn = clean_isbn(raw_isbn)
+
             title = b.get("title")
             author = b.get("author")
             year = b.get("year")
@@ -36,7 +45,7 @@ async def main():
             async def run_one():
                 return await fetch_price_estimate_for_book(
                     client,
-                    isbn=isbn,
+                    isbn=isbn,              # <-- IMPORTANT: pass cleaned isbn
                     title=title,
                     author=author,
                     year=year,
@@ -56,7 +65,7 @@ async def main():
                     sample_size=result["sample_size"],
                     median_excl=result["median_excl"],
                     median_incl_fixed=result["median_incl_fixed"],
-                    items_json={"items": result["debug_items"]},
+                    items_json={"items": result["debug_items"], "raw_isbn": raw_isbn, "clean_isbn": isbn},
                 )
 
                 title_disp = (title or "—").replace("\n", " ").strip()
@@ -66,16 +75,20 @@ async def main():
                 print(
                     f"[pricing] {i}/{total} book_id={book_id} | {name} | "
                     f"book_cond={condition} | used_cond={result['used_condition']} | "
-                    f"excl=${result['median_excl']} | incl_fixed=${result['median_incl_fixed']} | query={result['query_type']} | "
-                    f"n={result['sample_size']}"
+                    f"excl=${result['median_excl']} | incl_fixed=${result['median_incl_fixed']} | "
+                    f"query={result['query_type']} | n={result['sample_size']} | "
+                    f"raw_isbn={raw_isbn!r} clean_isbn={isbn!r}"
                 )
 
             except Exception as e:
                 # store a row with null price so you can see failures later
+                query_type = "gtin" if isbn else "q"
+                query_text = isbn or f"{title or ''} {author or ''} {year or ''}".strip()
+
                 db.upsert_ebay_pricing(
                     book_id=book_id,
-                    query_type="gtin" if isbn else "q",
-                    query_text=isbn or f"{title or ''} {author or ''} {year or ''}".strip(),
+                    query_type=query_type,
+                    query_text=query_text,
                     requested_condition=condition,
                     requested_condition_id=None,
                     used_condition=None,
@@ -83,9 +96,9 @@ async def main():
                     sample_size=0,
                     median_excl=None,
                     median_incl_fixed=None,
-                    items_json={"error": str(e)},
+                    items_json={"error": str(e), "raw_isbn": raw_isbn, "clean_isbn": isbn},
                 )
-                print(f"[pricing] {i}/{total} book_id={book_id} ERROR: {e}")
+                print(f"[pricing] {i}/{total} book_id={book_id} ERROR: {e} | raw_isbn={raw_isbn!r} clean_isbn={isbn!r}")
 
             await asyncio.sleep(throttle_seconds)
 

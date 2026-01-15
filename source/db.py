@@ -553,10 +553,16 @@ def override_extraction(book_id: int, isbn10: str | None, isbn13: str | None, ti
         session.flush()
 
 
+from sqlalchemy import select
+from sqlalchemy.orm import joinedload
+
 def list_books_for_pricing() -> list[dict]:
     """
-    Returns list of dicts: book_id, condition, isbn (prefer 13), title, author, year(optional)
-    Only includes books where extraction exists and status is done or needs_review.
+    Returns list of dicts used by pricing script.
+
+    Includes books where extraction exists and status is done or needs_review.
+    Fields:
+      book_id, condition, title, author, year, isbn13, isbn10, isbn_raw
     """
     with get_session() as session:
         rows = (
@@ -574,33 +580,25 @@ def list_books_for_pricing() -> list[dict]:
             ex = b.extraction
             if ex is None:
                 continue
-            if ex.status not in {"done", "needs_review"}:
+            if (ex.status or "").lower() not in {"done", "needs_review"}:
                 continue
 
-            isbn = ex.isbn13 or ex.isbn10
-            title = ex.title
-            author = ex.author
+            out.append(
+                {
+                    "book_id": b.id,
+                    "condition": b.condition,          # your enum string like "very_good"
+                    "title": (ex.title or "").strip() or None,
+                    "author": (ex.author or "").strip() or None,
+                    "year": ex.year,
+                    "isbn13": (ex.isbn13 or "").strip() or None,
+                    "isbn10": (ex.isbn10 or "").strip() or None,
+                    # if you have a raw isbn field, use it; otherwise fall back to 13/10
+                    "isbn": (getattr(ex, "isbn", None) or "").strip() or None,
+                }
+            )
 
-            year = None
-            # publication_year isn't a column on BookExtraction yet; try to pull from data_json if present
-            if ex.data_json:
-                try:
-                    d = json.loads(ex.data_json)
-                    y = d.get("publication_year")
-                    if isinstance(y, int):
-                        year = y
-                except Exception:
-                    pass
-
-            out.append({
-                "book_id": b.id,
-                "condition": b.condition,
-                "isbn": isbn,
-                "title": title,
-                "author": author,
-                "year": year,
-            })
         return out
+
 
 
 def upsert_ebay_pricing(

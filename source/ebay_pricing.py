@@ -18,6 +18,33 @@ COND_MAP = {
 
 ORDERED_COND_IDS = ["1000", "2750", "4000", "5000", "6000"]
 
+def clean_isbn(s: str | None) -> str | None:
+    """
+    Normalize ISBN/GTIN for eBay 'gtin' param.
+    - Removes hyphens/spaces/etc
+    - Keeps digits
+    - Allows X only as last char for ISBN-10
+    Returns digits-only ISBN-13 or ISBN-10 (possibly ending in X), else None.
+    """
+    if not s:
+        return None
+
+    s = s.strip().upper()
+    # keep only digits and X
+    filtered = "".join(ch for ch in s if ch.isdigit() or ch == "X")
+
+    # ISBN-13 must be exactly 13 digits
+    if len(filtered) == 13 and filtered.isdigit():
+        return filtered
+
+    # ISBN-10: first 9 digits numeric; last char numeric or X
+    if len(filtered) == 10 and filtered[:9].isdigit() and (filtered[9].isdigit() or filtered[9] == "X"):
+        return filtered
+
+    return None
+
+
+
 
 def _cond_distance(a: str, b: str) -> int:
     """Distance in the fixed ordering above."""
@@ -130,63 +157,100 @@ async def fetch_price_estimate_for_book(
       median_excl, median_incl_fixed
       debug_items (<=5)
     """
-    requested_condition_id = None
+    requested_condition_id: str | None = None
     if requested_condition in COND_MAP:
         requested_condition_id = COND_MAP[requested_condition][0]
 
-    # Build query
-    query_type = "gtin" if isbn else "q"
-    if isbn:
-        query_text = isbn
-    else:
-        parts = []
-        if title:
-            parts.append(title)
-        if author:
-            parts.append(author)
+    # --- Normalize inputs ---
+    isbn_clean = clean_isbn(isbn)
+
+    def build_q() -> str:
+        parts: list[str] = []
+        t = (title or "").strip()
+        a = (author or "").strip()
+        if t and t != "—":
+            parts.append(t)
+        if a and a != "—":
+            parts.append(a)
         if year:
             parts.append(str(year))
-        query_text = " ".join(parts).strip()
+        return " ".join(parts).strip()
 
-    # 1) Exact condition attempt (if we have one)
-    items = []
-    used_condition_id = None
-    used_condition = None
+    q_text = build_q()
 
-    if query_text:
+    # Search helper: tries exact condition (if given) then any condition.
+    async def run_search(*, gtin: str | None, q: str | None) -> list[dict]:
+        if not gtin and not q:
+            return []
+
+        # 1) Exact condition attempt
         if requested_condition_id:
-            data = await _browse_search(client, gtin=isbn if isbn else None, q=None if isbn else query_text, condition_id=requested_condition_id, limit=10)
+            data = await _browse_search(
+                client,
+                gtin=gtin,
+                q=q,
+                condition_id=requested_condition_id,
+                limit=10,
+            )
             items = data.get("itemSummaries") or []
+            if items:
+                return items
 
-        # 2) Fallback: any condition (single extra call)
-        if not items:
-            data_any = await _browse_search(client, gtin=isbn if isbn else None, q=None if isbn else query_text, condition_id=None, limit=20)
-            all_items = data_any.get("itemSummaries") or []
+        # 2) Any condition
+        data_any = await _browse_search(
+            client,
+            gtin=gtin,
+            q=q,
+            condition_id=None,
+            limit=20,
+        )
+        all_items = data_any.get("itemSummaries") or []
+        if not all_items:
+            return []
 
-            # Choose nearest condition among available items
-            if requested_condition_id:
-                # group by conditionId
-                best = None
-                best_dist = 999
-                for it in all_items:
-                    cid = it.get("conditionId")
-                    if not cid:
-                        continue
-                    d = _cond_distance(str(cid), requested_condition_id)
-                    if d < best_dist:
-                        best_dist = d
-                        best = str(cid)
-                if best is not None:
-                    items = [it for it in all_items if str(it.get("conditionId")) == best]
-                else:
-                    items = all_items
-            else:
-                items = all_items
+        # If we requested a condition, pick the nearest available conditionId
+        if requested_condition_id:
+            best = None
+            best_dist = 999
+            for it in all_items:
+                cid = it.get("conditionId")
+                if not cid:
+                    continue
+                d = _cond_distance(str(cid), requested_condition_id)
+                if d < best_dist:
+                    best_dist = d
+                    best = str(cid)
+
+            if best is not None:
+                filtered = [it for it in all_items if str(it.get("conditionId")) == best]
+                return filtered if filtered else all_items
+
+        return all_items
+
+    # --- Primary attempt: GTIN if available, else Q ---
+    query_type: str
+    query_text: str
+
+    items: list[dict] = []
+
+    if isbn_clean:
+        query_type = "gtin"
+        query_text = isbn_clean
+        items = await run_search(gtin=isbn_clean, q=None)
+
+        # NEW: if GTIN yields nothing, fall back to q search
+        if not items and q_text:
+            query_type = "q_fallback"
+            query_text = q_text
+            items = await run_search(gtin=None, q=q_text)
+    else:
+        query_type = "q"
+        query_text = q_text
+        items = await run_search(gtin=None, q=q_text) if q_text else []
 
     # Compute estimator
     excl, incl_fixed, debug = _extract_prices(items)
 
-    # Choose lowest N logic on excl and incl_fixed separately
     def pick_vals(vals: list[float]) -> list[float]:
         vals = sorted(vals)
         if len(vals) >= 5:
@@ -201,7 +265,8 @@ async def fetch_price_estimate_for_book(
     median_excl = _median(picked_excl)
     median_incl = _median(picked_incl)
 
-    # used condition (from the items we ended up using)
+    used_condition_id = None
+    used_condition = None
     if debug:
         used_condition_id = debug[0].get("conditionId")
         used_condition = debug[0].get("condition")
@@ -217,6 +282,7 @@ async def fetch_price_estimate_for_book(
         "median_incl_fixed": median_incl,
         "debug_items": debug,
     }
+
 
 
 async def fetch_with_retries(fn, *, max_attempts: int = 5, base_sleep: float = 0.6):
