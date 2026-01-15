@@ -48,8 +48,10 @@ async def get_ebay_app_token() -> str:
 
     async with httpx.AsyncClient(timeout=20.0) as client:
         resp = await client.post(url, headers=headers, data=data)
-        resp.raise_for_status()
+        if resp.status_code >= 400:
+            raise RuntimeError(f"Token request failed {resp.status_code}: {resp.text}")
         payload = resp.json()
+
 
     token = payload["access_token"]
     expires_in = int(payload.get("expires_in", 7200))  # seconds
@@ -66,3 +68,5 @@ async def ebay_auth_headers() -> dict:
         "Authorization": f"Bearer {token}",
         "X-EBAY-C-MARKETPLACE-ID": marketplace_id,
     }
+
+

@@ -739,3 +739,7 @@ async def ebay_account_deletion(request: Request):
     except Exception:
         pass
     return Response(status_code=200)
+
+@app.get("/auth/ebay/callback")
+async def ebay_oauth_callback(request: Request):
+    return {"ok": True, "query_params": dict(request.query_params)}
