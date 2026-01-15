@@ -589,7 +589,6 @@ def list_books_for_pricing() -> list[dict]:
                     "condition": b.condition,          # your enum string like "very_good"
                     "title": (ex.title or "").strip() or None,
                     "author": (ex.author or "").strip() or None,
-                    "year": ex.year,
                     "isbn13": (ex.isbn13 or "").strip() or None,
                     "isbn10": (ex.isbn10 or "").strip() or None,
                     # if you have a raw isbn field, use it; otherwise fall back to 13/10
@@ -648,3 +647,11 @@ def upsert_ebay_pricing(
         )
         session.add(row)
         session.flush()
+
+
+def get_error_extraction_book_ids(limit: int | None = None) -> list[int]:
+    with get_session() as session:
+        q = select(BookExtraction.book_id).where(BookExtraction.status == "error").order_by(BookExtraction.updated_at.desc())
+        if limit is not None:
+            q = q.limit(limit)
+        return [r[0] for r in session.execute(q).all()]

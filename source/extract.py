@@ -58,7 +58,23 @@ def extract_from_images(cover_bytes: bytes, copyright_bytes: bytes) -> Dict[str,
         }],
     )
 
-    text = resp.output_text
-    data = json.loads(text)
+    text = (resp.output_text or "").strip()
+
+    # If the model wrapped JSON in ```...```, strip it
+    if text.startswith("```"):
+        text = text.strip("`")
+        # sometimes it becomes "json\n{...}"
+        if "\n" in text:
+            text = text.split("\n", 1)[1].strip()
+
+    if not text:
+        raise ValueError("Model returned empty output_text (no JSON)")
+
+    try:
+        data = json.loads(text)
+    except Exception as e:
+        # include first 200 chars to debug quickly
+        raise ValueError(f"Invalid JSON from model: {e}. First200={text[:200]!r}")
+
     data["_model"] = "gpt-4.1-mini"
     return data
