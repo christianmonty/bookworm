@@ -6,7 +6,7 @@ from typing import Iterator, Dict, Any, List # what is this for?
 
 from sqlalchemy import (
     Boolean, Column, Integer, String, DateTime, ForeignKey, UniqueConstraint, func, Text, Float,)
-from sqlalchemy import create_engine, select
+from sqlalchemy import JSON, create_engine, select
 from sqlalchemy.orm import sessionmaker, Session, joinedload, declarative_base, relationship
 
 
@@ -91,6 +91,37 @@ class BookExtraction(Base):
     updated_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now())
 
     book = relationship("Book", back_populates="extraction")
+
+
+class BookEbayPricing(Base):
+    __tablename__ = "book_ebay_pricing"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    book_id = Column(Integer, ForeignKey("books.id", ondelete="CASCADE"), nullable=False, unique=True)
+
+    source = Column(String, nullable=False, default="ebay_active")
+    marketplace_id = Column(String, nullable=False, default="EBAY_US")
+    currency = Column(String, nullable=False, default="USD")
+
+    query_type = Column(String, nullable=False)   # 'gtin' or 'q'
+    query_text = Column(Text, nullable=False)
+
+    requested_condition = Column(String, nullable=True)     # your enum string
+    requested_condition_id = Column(String, nullable=True)  # eBay conditionId as string
+
+    used_condition = Column(String, nullable=True)          # eBay condition label from items
+    used_condition_id = Column(String, nullable=True)
+
+    sample_size = Column(Integer, nullable=False, default=0)
+
+    median_excl_shipping_usd = Column(Float, nullable=True)
+    median_incl_fixed_shipping_usd = Column(Float, nullable=True)
+
+    # Optional debugging (keep small): store the cheapest few items we used
+    items_json = Column(JSON, nullable=True)
+
+    updated_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now())
+
 
 
 # change below to Postgres (Cloud SQL) later
@@ -327,37 +358,39 @@ def set_owner(book_id: int, owner: str) -> None:
 
 
 # To prepare books for extraction
-def get_books_ready_for_extraction(limit: int = 10) -> List[int]:
+def get_books_ready_for_extraction(limit: int | None = None, force: bool = False) -> List[int]:
     """
-    Books that have BOTH images and do not have a completed extraction yet.
+    Books that have BOTH images.
+    - If force=False: exclude books whose extraction status is 'done'
+    - If force=True: include them anyway (re-run)
+    - If limit is None: return all
     """
     with get_session() as session:
-        # find books with cover+copyright in book_image
-        # and extraction missing or status != done
         subq_cover = select(BookImage.book_id).where(BookImage.image_type == "cover").subquery()
         subq_copy = select(BookImage.book_id).where(BookImage.image_type == "copyright").subquery()
 
-        # Books with both images
         q = (
             select(Book.id)
             .where(Book.id.in_(select(subq_cover.c.book_id)))
             .where(Book.id.in_(select(subq_copy.c.book_id)))
+            .order_by(Book.id.asc())
         )
 
         book_ids = [row[0] for row in session.execute(q).all()]
 
-        # Filter out already-done extractions
         out: List[int] = []
         for bid in book_ids:
             ex = session.execute(
                 select(BookExtraction).where(BookExtraction.book_id == bid)
             ).scalar_one_or_none()
-            if ex is None or ex.status != "done":
+
+            if force or ex is None or ex.status != "done":
                 out.append(bid)
-            if len(out) >= limit:
-                break
+                if limit is not None and len(out) >= limit:
+                    break
 
         return out
+
 
 
 def upsert_extraction(
@@ -519,3 +552,106 @@ def override_extraction(book_id: int, isbn10: str | None, isbn13: str | None, ti
 
         session.flush()
 
+
+from sqlalchemy import select
+from sqlalchemy.orm import joinedload
+
+def list_books_for_pricing() -> list[dict]:
+    """
+    Returns list of dicts used by pricing script.
+
+    Includes books where extraction exists and status is done or needs_review.
+    Fields:
+      book_id, condition, title, author, year, isbn13, isbn10, isbn_raw
+    """
+    with get_session() as session:
+        rows = (
+            session.execute(
+                select(Book)
+                .options(joinedload(Book.extraction))
+                .order_by(Book.id.asc())
+            )
+            .scalars()
+            .all()
+        )
+
+        out: list[dict] = []
+        for b in rows:
+            ex = b.extraction
+            if ex is None:
+                continue
+            if (ex.status or "").lower() not in {"done", "needs_review"}:
+                continue
+
+            out.append(
+                {
+                    "book_id": b.id,
+                    "condition": b.condition,          # your enum string like "very_good"
+                    "title": (ex.title or "").strip() or None,
+                    "author": (ex.author or "").strip() or None,
+                    "isbn13": (ex.isbn13 or "").strip() or None,
+                    "isbn10": (ex.isbn10 or "").strip() or None,
+                    # if you have a raw isbn field, use it; otherwise fall back to 13/10
+                    "isbn": (getattr(ex, "isbn", None) or "").strip() or None,
+                }
+            )
+
+        return out
+
+
+
+def upsert_ebay_pricing(
+    book_id: int,
+    query_type: str,
+    query_text: str,
+    requested_condition: str | None,
+    requested_condition_id: str | None,
+    used_condition: str | None,
+    used_condition_id: str | None,
+    sample_size: int,
+    median_excl: float | None,
+    median_incl_fixed: float | None,
+    items_json: dict | None,
+) -> None:
+    with get_session() as session:
+        existing = session.execute(
+            select(BookEbayPricing).where(BookEbayPricing.book_id == book_id)
+        ).scalar_one_or_none()
+
+        if existing:
+            existing.query_type = query_type
+            existing.query_text = query_text
+            existing.requested_condition = requested_condition
+            existing.requested_condition_id = requested_condition_id
+            existing.used_condition = used_condition
+            existing.used_condition_id = used_condition_id
+            existing.sample_size = sample_size
+            existing.median_excl_shipping_usd = median_excl
+            existing.median_incl_fixed_shipping_usd = median_incl_fixed
+            existing.items_json = items_json
+            session.flush()
+            return
+
+        row = BookEbayPricing(
+            book_id=book_id,
+            query_type=query_type,
+            query_text=query_text,
+            requested_condition=requested_condition,
+            requested_condition_id=requested_condition_id,
+            used_condition=used_condition,
+            used_condition_id=used_condition_id,
+            sample_size=sample_size,
+            median_excl_shipping_usd=median_excl,
+            median_incl_fixed_shipping_usd=median_incl_fixed,
+            items_json=items_json,
+        )
+        session.add(row)
+        session.flush()
+
+
+def get_error_extraction_book_ids(limit: int | None = None) -> list[int]:
+    with get_session() as session:
+        q = select(BookExtraction.book_id).where(BookExtraction.status == "error").order_by(BookExtraction.updated_at.desc())
+        if limit is not None:
+            q = q.limit(limit)
+        return [r[0] for r in session.execute(q).all()]

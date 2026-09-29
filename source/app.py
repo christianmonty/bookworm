@@ -5,8 +5,9 @@ from pathlib import Path
 load_dotenv(Path(__file__).resolve().parents[1] / ".env")
 
 import os
+import json, logging, hashlib
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, UploadFile, File, HTTPException, Request, Form, Response
+from fastapi import FastAPI, Query, UploadFile, File, HTTPException, Request, Form, Response
 from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse, Response
 from starlette.middleware.sessions import SessionMiddleware
 
@@ -492,11 +493,13 @@ async def apple_touch_icon_precomposed():
 
 # this is to run extraction job
 @app.post("/jobs/extract")
-async def run_extract_job(limit: int = 10):
-    book_ids = db.get_books_ready_for_extraction(limit=limit)
+async def run_extract_job(limit: int | None = None, force: bool = False):
+    book_ids = db.get_books_ready_for_extraction(limit=limit, force=force)
     results = []
 
-    for book_id in book_ids:
+    total = len(book_ids)
+    for i, book_id in enumerate(book_ids, start=1):
+        print(f"[extract] {i}/{total} book_id={book_id}", flush=True)
         cover_path = db.load_path(book_id, "cover")
         copy_path = db.load_path(book_id, "copyright")
         if not cover_path or not copy_path:
@@ -691,7 +694,7 @@ async def review_extraction_detail(book_id: int):
     </body></html>
     """
 
-
+@app.post("/review/books/{book_id}/override")
 async def override_extraction_endpoint(book_id: int, request: Request):
     payload = await request.json()
     try:
@@ -708,3 +711,100 @@ async def override_extraction_endpoint(book_id: int, request: Request):
 
 
 
+logger = logging.getLogger("ebay_webhook")
+
+EBAY_VERIFICATION_TOKEN = "bookworm-dev-verify-token-2026-01-10"
+
+def compute_challenge_response(challenge_code: str, endpoint_url: str) -> str:
+    # MUST be: challengeCode + verificationToken + endpoint  (in that order)
+    msg = (challenge_code + EBAY_VERIFICATION_TOKEN + endpoint_url).encode("utf-8")
+    return hashlib.sha256(msg).hexdigest()
+
+@app.get("/ebay/account-deletion")
+async def ebay_validate(request: Request, challenge_code: str = Query(...)):
+    # endpoint must be EXACT URL eBay is validating, with https scheme
+    # Use Host + path; force https because eBay calls your ngrok URL via https
+    host = request.headers.get("host")
+    endpoint_url = f"https://{host}{request.url.path}"
+
+    digest = compute_challenge_response(challenge_code, endpoint_url)
+    return JSONResponse({"challengeResponse": digest})  # Content-Type: application/json
+
+@app.post("/ebay/account-deletion")
+async def ebay_account_deletion(request: Request):
+    body = await request.body()
+    logger.warning("eBay deletion event raw=%s", body.decode("utf-8", errors="replace"))
+    try:
+        logger.warning("eBay deletion event json=%s", json.loads(body))
+    except Exception:
+        pass
+    return Response(status_code=200)
+
+@app.get("/auth/ebay/callback")
+async def ebay_oauth_callback(request: Request):
+    return {"ok": True, "query_params": dict(request.query_params)}
+
+
+@app.post("/jobs/extract_errors")
+async def run_extract_errors(limit: int | None = None):
+    book_ids = db.get_error_extraction_book_ids(limit=limit)
+    return await _run_extract_for_book_ids(book_ids)
+
+async def _run_extract_for_book_ids(book_ids: list[int]):
+    results = []
+    total = len(book_ids)
+
+    for i, book_id in enumerate(book_ids, start=1):
+        print(f"[extract] {i}/{total} book_id={book_id}", flush=True)
+
+        cover_path = db.load_path(book_id, "cover")
+        copy_path = db.load_path(book_id, "copyright")
+        if not cover_path or not copy_path:
+            db.upsert_extraction(
+                book_id=book_id,
+                status="error",
+                isbn10=None, isbn13=None, title=None, author=None,
+                confidence=None, flags=["missing_images"], data=None,
+                model=None, error="Missing cover or copyright image path in DB",
+            )
+            continue
+
+        try:
+            cover_bytes = gcs.read_bytes(cover_path)
+            copy_bytes = gcs.read_bytes(copy_path)
+            data = extract.extract_from_images(cover_bytes, copy_bytes)
+
+            flags = data.get("flags") or []
+            confidence = data.get("confidence")
+
+            status = "done"
+            if data.get("isbn13") is None and data.get("isbn10") is None:
+                status = "needs_review"
+            if data.get("title") is None or data.get("author") is None:
+                status = "needs_review"
+
+            db.upsert_extraction(
+                book_id=book_id,
+                status=status,
+                isbn10=data.get("isbn10"),
+                isbn13=data.get("isbn13"),
+                title=data.get("title"),
+                author=data.get("author"),
+                confidence=confidence,
+                flags=flags,
+                data=data,
+                model=data.get("_model"),
+                error=None,
+            )
+            results.append({"book_id": book_id, "status": status})
+        except Exception as e:
+            db.upsert_extraction(
+                book_id=book_id,
+                status="error",
+                isbn10=None, isbn13=None, title=None, author=None,
+                confidence=None, flags=["exception"], data=None,
+                model=None, error=str(e),
+            )
+            results.append({"book_id": book_id, "status": "error", "error": str(e)})
+
+    return {"processed": results}
